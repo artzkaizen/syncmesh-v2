@@ -7,7 +7,13 @@ import type { Switches, Wiring, World } from "./world.js";
 
 import { analyze, render, type Held } from "./analyze.js";
 import { key, table } from "./cells.js";
-import { checkDigests, checkHeld, renderInvariant, type Holding } from "./invariant.js";
+import {
+  checkDigests,
+  checkHeld,
+  renderInvariant,
+  standingRefusals,
+  type Holding,
+} from "./invariant.js";
 import { createLedger, short } from "./ledger.js";
 import { seeded } from "./random.js";
 import { reachOver, stateOnlyOver } from "./reach.js";
@@ -225,9 +231,7 @@ const main = async () => {
 
     // the durability invariant, from each engine's own log and cursors rather than its rows
     const holding = await holdings(world);
-    const told = new Set(
-      ledger.entries().flatMap((entry) => (entry.kind === "refused" ? [entry.device] : [])),
-    );
+    const told = new Set(standingRefusals(ledger.entries()).keys());
     const wirings = new Map(world.devices.map((device) => [device.name, device.wiring]));
     const reaches = reachOver(wirings, told);
     const stateOnly = stateOnlyOver(wirings, told, holding);

@@ -93,8 +93,11 @@ function report(mesh: Mesh, name: string, ledger: Ledger): void {
   // (gaps U30), raised whether or not the room also closed the socket with the code
   const told = new Set<string>();
   mesh.recovery.onBelowFloor(() => {
+    const standing = new Set<string>();
     for (const issue of mesh.recovery.belowFloor()) {
-      if (issue.reason !== "retention" || told.has(issue.relay)) continue;
+      if (issue.reason !== "retention") continue;
+      standing.add(issue.relay);
+      if (told.has(issue.relay)) continue;
       told.add(issue.relay);
       ledger.write({
         kind: "refused",
@@ -103,6 +106,11 @@ function report(mesh: Mesh, name: string, ledger: Ledger): void {
         code: issue.reason,
         message: issue.message,
       });
+    }
+    // served since, or stopped: the oracle holds this device to everything again
+    for (const relay of [...told].filter((relay) => !standing.has(relay))) {
+      told.delete(relay);
+      ledger.write({ kind: "cleared", device: name, transport: relay });
     }
   });
   mesh.engine.onQuarantine(({ event, reason }) =>

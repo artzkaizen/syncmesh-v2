@@ -136,6 +136,13 @@ export interface Refused extends Base {
   readonly message: string;
 }
 
+/** A refusal the device recorded is over: the source served it, or the link stopped. */
+export interface Cleared extends Base {
+  readonly kind: "cleared";
+  readonly device: string;
+  readonly transport: string;
+}
+
 /** A blob was put or read. `outcome` is `ok`, `mismatch`, or the error's tag. */
 export interface BlobFact extends Base {
   readonly kind: "blob";
@@ -167,6 +174,7 @@ export type Entry =
   | Compacted
   | Covered
   | Refused
+  | Cleared
   | BlobFact
   | Violation;
 

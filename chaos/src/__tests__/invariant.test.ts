@@ -114,6 +114,29 @@ describe("checkHeld", () => {
     ]);
   });
 
+  /**
+   * Every refusal a device ever recorded excused it for the rest of the run, so a device refused
+   * at the heal and served later was never held to what it still lacked.
+   */
+  test("a refusal that cleared excuses nothing", () => {
+    const entries = ledgerWith(
+      {
+        kind: "refused",
+        device: "b",
+        transport: "relay",
+        code: "retention",
+        message: "below the floor",
+      },
+      { kind: "cleared", device: "b", transport: "relay" },
+    );
+    const report = checkHeld(entries, [
+      holding("a", ["pa-1", "pa-2"], { pa: 2 }),
+      holding("b", ["pa-1"], { pa: 1 }),
+    ]);
+    expect(report.refused).toEqual([]);
+    expect(report.violations).toHaveLength(1);
+  });
+
   test("a refusal does not excuse a cursor that claims an event the log lacks", () => {
     const entries = ledgerWith({
       kind: "refused",

@@ -58,12 +58,17 @@ function floorsFrom(entries: readonly Entry[]): Floors {
   return floors;
 }
 
-/** Per device, the first typed refusal it recorded. */
-function refusalsFrom(entries: readonly Entry[]): ReadonlyMap<string, string> {
+/**
+ * Per device, the typed refusal that still stands at the end of the run: the first one recorded
+ * since its last clearing. A device that was refused and then served is held to everything again.
+ */
+export function standingRefusals(entries: readonly Entry[]): ReadonlyMap<string, string> {
   const refusals = new Map<string, string>();
-  for (const entry of entries)
+  for (const entry of entries) {
+    if (entry.kind === "cleared") refusals.delete(entry.device);
     if (entry.kind === "refused" && !refusals.has(entry.device))
       refusals.set(entry.device, `${entry.transport} ${entry.code}: ${entry.message}`);
+  }
   return refusals;
 }
 
@@ -103,7 +108,7 @@ export function checkHeld(
   why: Excuses = NO_EXCUSES,
 ): InvariantReport {
   const floors = floorsFrom(entries);
-  const refusals = refusalsFrom(entries);
+  const refusals = standingRefusals(entries);
   const violations: Fact<Violation>[] = [];
   const refused: RefusedEvent[] = [];
   let checked = 0;
