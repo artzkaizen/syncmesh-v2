@@ -43,6 +43,9 @@ try {
   const names = ["alice", "bob", "carol"];
   for (const [n, name] of names.entries())
     phones.push(await phone(name, dialing(n + 1), backend.issuer, dir));
+  // joined, not merely open: a phone's socket is dialled after its mesh opens, and the room on
+  // its instance opens only when that socket arrives
+  for (const mesh of phones) await mesh.settled();
   for (const [n, mesh] of phones.entries())
     check(
       await admitted(mesh, WAIT),
@@ -59,6 +62,14 @@ try {
     ),
     "every phone holds every other phone's grant",
   );
+  for (const [n, mesh] of phones.entries()) {
+    const missing = names.filter((name) => {
+      const peer = identityNamed(`device:${name}`).peerId;
+      return mesh.grants.grantFor(peer) === undefined;
+    });
+    if (missing.length > 0)
+      console.log(`      ${names[n]} holds no grant for ${missing.join(", ")}`);
+  }
   const [alice, bob, carol] = phones;
   if (alice === undefined || bob === undefined || carol === undefined)
     throw new Error("three phones were opened");
