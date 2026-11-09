@@ -188,7 +188,8 @@ export function secureLink(link: FrameLink, options: SessionOptions): FrameLink 
      * ours is fresh too, because the peer discarded the secret behind the key it had from us,
      * and agreeing the new session under the old one would carry a dead link's material into a
      * live one. If it has not, our hello is still in flight and theirs is the answer to it —
-     * agree under what we already offered, and send nothing, so the exchange ends.
+     * agree under what we already offered, and offer that same hello again, never a fresh one,
+     * so the exchange ends.
      */
     const offering = confirmed;
     if (offering) {
@@ -197,12 +198,17 @@ export function secureLink(link: FrameLink, options: SessionOptions): FrameLink 
     }
     const agreed = sessionKeys(secret, self, peer.value);
     if (agreed.isErr()) return fail(agreed.error);
-    if (offering) {
-      // unsealed, and before the keys change: it is what the far side agrees its half from, and
-      // it is waiting for it — its own hello was the first thing its new session sent
-      const greeted = put(self.frame);
-      if (greeted.isErr()) return fail(greeted.error);
-    }
+    /**
+     * Ours goes back either way: unsealed, and before the keys change, because it is what the far
+     * side agrees its half from. Offering, it is fresh and the peer is waiting for it. Answering,
+     * it is the hello the peer *may* already hold — or may not: a peer that hung this link up and
+     * opened a new session on it (a door that refused, then a write that arrived after) never saw
+     * it, and held every frame we sealed as `a frame arrived before the session was open` for as
+     * long as both ends stayed up. A peer that did agree under it has it in its {@link offered}
+     * and drops the copy, so the exchange still ends.
+     */
+    const greeted = put(self.frame);
+    if (greeted.isErr()) return fail(greeted.error);
     keys = agreed.value;
     confirmed = false;
     remember(peer.value.ephemeral);

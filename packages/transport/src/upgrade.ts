@@ -1,13 +1,15 @@
 import type { PeerId } from "@syncmesh/kernel";
-import type { Identity } from "@syncmesh/wire";
+import type { GrantRegistry, Identity } from "@syncmesh/wire";
 
-import { omitUndefined } from "@syncmesh/result";
+import { Result, omitUndefined } from "@syncmesh/result";
+import { Temporal, durationMs } from "@syncmesh/temporal";
 
 import type { Bridge } from "./bridge.js";
 import type { ByteStream } from "./framing.js";
 import type { AdmissionAsk } from "./gate.js";
 import type { FrameLink } from "./link.js";
 
+import { decodeFrame, grantFrame } from "./frame.js";
 import { framed } from "./framing.js";
 import { secureLink } from "./session.js";
 
@@ -82,8 +84,31 @@ export interface UpgraderDeps {
   readonly attach: (link: FrameLink, peer: PeerId) => Bridge;
   /** The door, asked once the handshake has named the peer (book ch. 14). */
   readonly admits?: (ask: AdmissionAsk) => Promise<boolean>;
+  /**
+   * This device's grants: its own is presented to every peer the moment the handshake proves
+   * it, and a peer's presented grant is registered before the door is asked a second time. See
+   * {@link PRESENTATION_WAIT}.
+   */
+  readonly grants?: Pick<GrantRegistry, "register" | "wireFor">;
   readonly onDropped?: (why: string) => void;
 }
+
+/**
+ * How long a door that refused a peer waits for it to present its own grant before the link
+ * closes.
+ *
+ * **A grant reaches a device only over a link its door admitted, so a door that has never heard
+ * of a peer could never hear of it from that peer.** Grants travel first in every session, but
+ * only once the bridge is attached, which is after the door said yes. A device granted mid-run
+ * whose only neighbours are radio-only devices that do not hold its grant was refused by each of
+ * them, every time, for good — nothing else in reach could introduce it (chaos soak, `--grants
+ * fault`, seed 9). So each end sends its own grant, sealed, as the first frame of a proven link,
+ * and a door that refused looks at what arrived before deciding: a grant for the proven peer that
+ * verifies under this device's issuer is registered, and the door is asked again. A grant is
+ * self-authenticating, so taking one from a peer the door has not admitted trusts nothing the
+ * door would not; a stranger's grant does not verify and is refused at once.
+ */
+export const PRESENTATION_WAIT = Temporal.Duration.from({ seconds: 1 });
 
 /**
  * A link that holds what arrives until somebody is listening, then hands it over in order.
@@ -93,16 +118,21 @@ export interface UpgraderDeps {
  * and cursors. Dropping those is not fatal, because the bridge re-exchanges on attach, but it
  * costs a round trip on every link for no reason, and "not fatal" is a poor thing to build on.
  */
-const heldUntilRead = (link: FrameLink): FrameLink => {
+const heldUntilRead = (
+  link: FrameLink,
+  held: (frame: Uint8Array) => void,
+): FrameLink & { readonly held: () => readonly Uint8Array[] } => {
   const waiting: Uint8Array[] = [];
   let sink: ((frame: Uint8Array) => void) | undefined;
   const off = link.onFrame((frame) => {
-    if (sink === undefined) return void waiting.push(frame);
-    sink(frame);
+    if (sink !== undefined) return sink(frame);
+    waiting.push(frame);
+    held(frame);
   });
-  const held: FrameLink = {
-    send: (frame) => link.send(frame),
-    onFrame: (cb) => {
+  const buffered = {
+    held: (): readonly Uint8Array[] => [...waiting],
+    send: (frame: Uint8Array) => link.send(frame),
+    onFrame: (cb: (frame: Uint8Array) => void) => {
       sink = cb;
       const read = waiting.splice(0);
       for (const frame of read) cb(frame);
@@ -114,8 +144,8 @@ const heldUntilRead = (link: FrameLink): FrameLink => {
     },
   };
   const { sendLatest } = link;
-  if (sendLatest !== undefined) Object.assign(held, { sendLatest });
-  return held;
+  if (sendLatest !== undefined) Object.assign(buffered, { sendLatest });
+  return buffered;
 };
 
 export function createUpgrader(deps: UpgraderDeps): Upgrader {
@@ -169,16 +199,70 @@ export function createUpgrader(deps: UpgraderDeps): Upgrader {
       onEstablished: (proven) => {
         peer = proven;
         options.onProven?.(proven);
+        present();
         void admitted(proven);
       },
       onFailed: (cause) => close(`the session with ${who} failed: ${String(cause)}`),
     });
 
+    /** Our own grant, first, so a door that has not heard of us can read it (see `PRESENTATION_WAIT`). */
+    const present = (): void => {
+      const own = deps.grants?.wireFor(deps.identity.peerId);
+      const secured = session;
+      if (own === undefined || secured === undefined) return;
+      const sent = Result.try({
+        try: () => secured.send(grantFrame(own)),
+        catch: (cause) => cause,
+      });
+      // not the link's end: the bridge's own grants follow on attach, and a dead link says so there
+      if (sent.isErr())
+        deps.onDropped?.(`the grant presented to ${who} did not leave: ${String(sent.error)}`);
+    };
+
+    /** Settled by the proven peer's presented grant, verified or not, once one arrives. */
+    let presented: ((registered: boolean) => void) | undefined;
+    /** What arrived before the door answered, read only for the proven peer's grant. */
+    const heard = (frame: Uint8Array): void => {
+      if (presented === undefined || peer === undefined) return;
+      const decoded = decodeFrame(frame);
+      if (decoded.isErr() || decoded.value.kind !== "grant") return;
+      const registered = deps.grants?.register(decoded.value.wire);
+      if (registered === undefined) return;
+      // someone else's grant, forwarded ahead of the peer's own: not a presentation
+      if (registered.isOk() && registered.value.device !== peer) return;
+      presented(registered.isOk());
+    };
+
     /** The held end, so nothing the far side says between the handshake and the door is lost. */
-    const buffered = heldUntilRead(session);
+    const buffered = heldUntilRead(session, heard);
+
+    /** Whether the peer presented a grant that verifies, before {@link PRESENTATION_WAIT} ran out. */
+    const presentation = (): Promise<boolean> =>
+      new Promise((resolve) => {
+        const timer = setTimeout(() => settle(false), durationMs(PRESENTATION_WAIT));
+        const settle = (registered: boolean): void => {
+          clearTimeout(timer);
+          presented = undefined;
+          resolve(registered);
+        };
+        presented = settle;
+        // what arrived while the door deliberated first, then whatever arrives after
+        for (const frame of buffered.held()) heard(frame);
+      });
 
     const admitted = async (proven: PeerId): Promise<void> => {
-      const allowed = await deps.admits?.({ peer: proven, transport: deps.transport });
+      const ask = { peer: proven, transport: deps.transport };
+      let allowed = await deps.admits?.(ask);
+      // a peer whose grant this device holds was refused for what the grant says, not for
+      // lacking one: only a stranger to the registry is waited on
+      const grants = deps.grants;
+      if (
+        allowed === false &&
+        !closed &&
+        grants !== undefined &&
+        grants.wireFor(proven) === undefined
+      )
+        allowed = (await presentation()) && ((await deps.admits?.(ask)) ?? true);
       if (closed) return;
       // deny is retry-after-backoff and never a verdict: the next sighting asks again, and a
       // grant or a policy that lands a moment later heals the mesh with no rendezvous

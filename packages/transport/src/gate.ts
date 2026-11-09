@@ -111,18 +111,15 @@ export function createAdmissionGate(options: GateOptions) {
       return "deny";
     const held = grants.grantFor(ask.peer);
     /**
-     * **A peer this device holds no grant for is refused at both rungs, which means first contact
-     * over a radio needs an introduction that did not come over that radio.**
+     * **A peer this device holds no grant for is refused here, and the upgrader then reads the
+     * grant the peer presents before it closes the link** (`PRESENTATION_WAIT` in `upgrade.ts`).
      *
      * Said here because it is a property of the whole system and this is the line that has it. A
-     * grant arrives as data — from an authority, or folded from a mesh this device is already on —
-     * and the bridge exchanges grants only *after* the door has admitted the link. So two devices
-     * that have never met through a relay do not link over the local network, Wi-Fi or BLE either:
-     * the handshake completes, this denies, the link closes, and the next announcement tries again.
-     *
-     * That is today's design rather than an oversight — {@link AdmissionAsk.requesting} is the
-     * corridor meant for it, and nothing sets it yet. Until something does, an offline-first pair
-     * has to be introduced while it is online at least once.
+     * grant arrives as data — from an authority, folded from a mesh this device is already on, or
+     * presented by the peer itself as the first sealed frame of a proven link. A presented grant
+     * that verifies under this device's issuer is registered and this door asked again, so two
+     * devices granted after they last met link over a radio on first contact. A peer with no
+     * grant from our issuer still has only {@link AdmissionAsk.requesting}, which nothing sets yet.
      */
     if (held === undefined) return "deny";
     const ours = new Set(partitions());
