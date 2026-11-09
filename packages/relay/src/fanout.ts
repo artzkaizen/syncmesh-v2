@@ -19,6 +19,12 @@ export interface Fanout {
 export interface FanoutLink {
   readonly publish: (frame: Uint8Array) => void;
   readonly onFrame: (cb: (frame: Uint8Array) => void) => Unsubscribe;
+  /**
+   * Settles once this link hears the room — a subscription acknowledged — after its first
+   * `onFrame`. A frame another instance publishes before then never reaches this one, so a room
+   * waits for it before it seats a socket (gaps U41). Absent: hearing starts at once.
+   */
+  readonly heard?: () => Promise<void>;
   readonly close: () => void;
 }
 
