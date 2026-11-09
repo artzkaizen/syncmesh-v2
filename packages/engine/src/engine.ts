@@ -329,8 +329,6 @@ export function createEngine(options: EngineOptions): Engine {
 
   const revert = createRevert({ ...held, undo, undoDepth, validate, mutate: writes.mutate });
 
-  const chains = createFeedPath({ store, feeds, receiveBatch });
-
   const receiveAndRetry = withRetry(receiveBatch, parked);
 
   return {
@@ -339,7 +337,7 @@ export function createEngine(options: EngineOptions): Engine {
     ...writes,
     receiveBatch: receiveAndRetry,
     receive: (entry) => receiveAndRetry([entry]),
-    ...chains,
+    ...createFeedPath({ store, feeds, receiveBatch }),
     state: getState,
     rowsIn: (table, partition) => readRowsIn(getState(), table, partition),
     deletedAt: (table, key) => {

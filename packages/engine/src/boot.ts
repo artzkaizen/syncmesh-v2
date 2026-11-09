@@ -92,7 +92,11 @@ function seat(
       atomic(async (scoped) => {
         const into = scoped.state ?? stateStore;
         orThrow(await commit(into));
-        orThrow(await restoreDocColumns(scoped.docs ?? docStore, docs, into, state, rows));
+        // the doc store the running engine reads (`docPath.within`): the transaction's only
+        // when the engine was given one, so a boot without `docStore` restores nothing, as
+        // without `atomic`
+        const held = docStore === undefined ? undefined : (scoped.docs ?? docStore);
+        orThrow(await restoreDocColumns(held, docs, into, state, rows));
       }),
     // a store failure inside the transaction, rolling the commit back with it
     catch: (cause) =>
