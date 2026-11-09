@@ -208,7 +208,7 @@ export async function sqlBlobLedger(driver: SqlDriver): Promise<Result<BlobLedge
     "tbl, row_key, hashes, written_ms, written_logical, written_peer, deleted_ms, deleted_logical, deleted_peer";
   const upsertRow = `INSERT INTO ${ROWS} (${columns}) VALUES (${values(9)}) ON CONFLICT (tbl, row_key) DO UPDATE SET hashes = excluded.hashes, written_ms = excluded.written_ms, written_logical = excluded.written_logical, written_peer = excluded.written_peer, deleted_ms = excluded.deleted_ms, deleted_logical = excluded.deleted_logical, deleted_peer = excluded.deleted_peer`;
   const selectRow = `SELECT ${columns} FROM ${ROWS} WHERE tbl = ${p(1)} AND row_key = ${p(2)}`;
-  const upsertWindow = `INSERT INTO ${WINDOWS} (hash, since_ms) VALUES (${values(2)}) ON CONFLICT (hash) DO UPDATE SET since_ms = CASE WHEN excluded.since_ms > since_ms THEN excluded.since_ms ELSE since_ms END`;
+  const upsertWindow = `INSERT INTO ${WINDOWS} AS kept (hash, since_ms) VALUES (${values(2)}) ON CONFLICT (hash) DO UPDATE SET since_ms = CASE WHEN excluded.since_ms > kept.since_ms THEN excluded.since_ms ELSE kept.since_ms END`;
   const deleteWindow = `DELETE FROM ${WINDOWS} WHERE hash = ${p(1)}`;
   const upsertMeta = `INSERT INTO ${META} (key, value) VALUES (${values(2)}) ON CONFLICT (key) DO UPDATE SET value = excluded.value`;
 
