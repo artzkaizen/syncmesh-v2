@@ -5,7 +5,7 @@ import { Database } from "bun:sqlite";
 
 import type { ExpoBindValue, ExpoDatabase } from "../driver.js";
 
-import { expoSqliteDriverOver } from "../driver.js";
+import { durableDriverOver } from "../driver.js";
 
 /**
  * `expo-sqlite`'s four calls, over `bun:sqlite`.
@@ -43,10 +43,7 @@ export const fakeExpo = (path: string) => {
  * kill and tear.
  */
 export async function expoFileDriver(logPath: string, schema: string): Promise<SqliteDriver> {
-  const db = fakeExpo(statePath(logPath, schema));
-  db.execSync("PRAGMA journal_mode = WAL");
-  db.execSync("PRAGMA synchronous = NORMAL");
-  const driver = expoSqliteDriverOver(db);
+  const driver = durableDriverOver(fakeExpo(statePath(logPath, schema)));
   await attachLog(driver, logPath);
   return driver;
 }

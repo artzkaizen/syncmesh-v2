@@ -137,3 +137,13 @@ export const expoSqliteDriverOver = (db: ExpoDatabase): SqliteDriver =>
       ),
     close: () => db.closeSync(),
   });
+
+/**
+ * {@link expoSqliteDriverOver} with WAL and `synchronous = NORMAL` set first (RFC-0004): what
+ * `expoSqliteDriver` opens a database with, and what the tests open their stand-in with.
+ */
+export function durableDriverOver(db: ExpoDatabase): SqliteDriver {
+  db.execSync("PRAGMA journal_mode = WAL");
+  db.execSync("PRAGMA synchronous = NORMAL");
+  return expoSqliteDriverOver(db);
+}
