@@ -1,6 +1,6 @@
 import type { PolicyNode } from "@syncmesh/policy";
 
-import { evaluate } from "@syncmesh/policy";
+import { evaluate, owner } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
 import type { Combinators } from "../bind.js";
@@ -159,5 +159,28 @@ describe("named rules", () => {
     // @ts-expect-error `reader` is the only role
     expect(isAdmin(readers)).toEqual({ kind: "role", role: "admin" });
     expect(isOwner(readers)).toEqual({ kind: "owner", column: "createdBy" });
+  });
+
+  test("a module-level value rule composes the same, and nothing checks its column", () => {
+    // the form E06 first wrote down: `const isOwner = owner("createdBy")`
+    const ownsIt = owner("createdBy");
+    const valued = syncSchema({
+      tables: {
+        books: {
+          columns: { id: t.uuid().primaryKey(), title: t.text(), createdBy: t.text() },
+          partition: org,
+          allow: (c) => ({ $default: c.role("member"), update: c.any(ownsIt, c.role("admin")) }),
+        },
+        // compiles, though `notes` has no `createdBy`: the typed function form is what catches it
+        notes: {
+          columns: { id: t.uuid().primaryKey(), author: t.text() },
+          partition: org,
+          allow: () => ({ $default: ownsIt }),
+        },
+      },
+    });
+    const [books, notes] = valued.entries;
+    expect(books?.allow?.update).toEqual(named.entries[0]?.allow?.update);
+    expect(notes?.allow?.$default).toEqual({ kind: "owner", column: "createdBy" });
   });
 });
