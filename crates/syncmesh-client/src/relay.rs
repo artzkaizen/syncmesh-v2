@@ -700,6 +700,12 @@ impl RelayLink {
                         reason: REFUSED.to_owned(),
                     });
                 }
+                // below the room's floor and served nothing, but still heard: what this device
+                // holds above the cursors the room's hello named goes over before it hangs up
+                // (`relay/src/retention.ts` `refusedBelowFloor`)
+                if code == "retention" {
+                    self.push_outstanding(engine, out);
+                }
                 self.hang_up(&format!("{code}: {message}"), out);
             }
             RelayFrame::Session(frame) => self.on_session(engine, frame, now_ms, out),

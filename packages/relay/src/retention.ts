@@ -224,6 +224,13 @@ export function belowFloor(theirs: Cursors, floor: Cursors): boolean {
  * Refuses a join whose cursors are below the room's floor, with a typed `retention` error that
  * names the floor, so the device can say what it is below and stop dialling (gaps U30). Whether
  * it refused.
+ *
+ * **Not a hang-up.** The room serves this device nothing, but it still takes what the device
+ * hands it: the device sends everything it holds above the cursors the room's hello named, then
+ * closes. A refusal that closed the socket kept every write the device made while away — and
+ * every write it carried for a neighbour with no network — out of the room for as long as it
+ * waited for state, which for a device that reaches the mesh only through this room was for
+ * good, and nobody else was told (chaos soak, `--retention`, every seed with a relay-only sleeper).
  */
 export function refusedBelowFloor(
   refuse: Conversation["refuse"],
@@ -231,7 +238,7 @@ export function refusedBelowFloor(
   floor: Cursors,
 ): boolean {
   if (!belowFloor(theirs, floor)) return false;
-  refuse("retention", BELOW_FLOOR, true, floor);
+  refuse("retention", BELOW_FLOOR, false, floor);
   return true;
 }
 

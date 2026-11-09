@@ -155,7 +155,7 @@ describe("the room-log retention cap", () => {
     room.close();
   });
 
-  test("a joiner below the floor is refused and closed, never registered and never paged", async () => {
+  test("a joiner below the floor is told where the room is and refused, never registered and never paged", async () => {
     const { room, tick: setClock } = await fourEvents(2);
     setClock(at(KEEP_MS + STEP_MS));
     await room.sweep();
@@ -163,9 +163,10 @@ describe("the room-log retention cap", () => {
     const s = joinAt(room, peer(200, "acct_j").identity.peerId, 0);
     await tick();
     expect(s.ofKind("error")[0]?.code).toBe("retention");
-    expect(s.closedWith).toEqual(["retention"]);
     expect(s.ofKind("page")).toEqual([]); // no page with the bottom missing
-    expect(s.ofKind("hello")).toEqual([]);
+    // the room's position, so the device knows what to hand over; and the socket stays to take it
+    expect(s.ofKind("hello")).toHaveLength(1);
+    expect(s.closedWith).toEqual([]);
     expect(room.clients()).toBe(1); // the author that fed it, and nobody else
     room.close();
   });
@@ -187,7 +188,7 @@ describe("the room-log retention cap", () => {
 
     expect(s.ofKind("page")).toEqual([]);
     expect(s.ofKind("error")[0]?.code).toBe("retention");
-    expect(s.closedWith).toEqual(["retention"]);
+    expect(s.closedWith).toEqual([]);
     room.close();
   });
 
@@ -435,6 +436,55 @@ describe("a device the room refuses with retention (gaps U30)", () => {
     expect(await until(() => online)).toBe(true);
     expect(dials()).toBe(3);
     expect(rejoins.issues()).toEqual([]);
+    await t.stop();
+    room.close();
+  }, 20_000);
+
+  /**
+   * The refusal used to close the socket, so a device that wrote while it was away — or carried
+   * writes for a neighbour with no network — kept them until it held the floor, which a device
+   * that reaches the mesh only through this room never does. Nobody else was told (chaos soak,
+   * `--retention`: the relay-only sleeper's writes, on every seed that has one).
+   */
+  test("hands over what it wrote before it hangs up, though the room serves it nothing", async () => {
+    const {
+      store,
+      room,
+      tick: setClock,
+    } = await fourEvents(2, {
+      versions: RELAY_PROTOCOL_VERSIONS,
+    });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+
+    const x = peer(92, "acct_x");
+    await write(x, "x1", "written while away");
+    await write(x, "x2", "and again");
+    const rejoins = createRejoins();
+    const t = relayTransport({ dial: dialTo(room).dial, reconnectMs: 5 });
+    await t.start({ ...x.context, rejoins });
+    expect(await until(() => rejoins.issues().length === 1)).toBe(true);
+
+    const handed = async () =>
+      (await store.allSince(new Map()))
+        .unwrap()
+        .filter(({ event }) => event.peerId === x.identity.peerId).length;
+    const landed = async (count: number) => {
+      let held = 0;
+      for (let round = 0; round < 100 && held < count; round += 1) {
+        held = await handed();
+        await tick(15);
+      }
+      return held;
+    };
+    expect(await landed(2)).toBe(2);
+    // and still refused: nothing of the room's came back to a device below its floor
+    expect(bodyOf(x, "n3")).toBeUndefined();
+
+    // a write made while it waits for state is handed over too, by one more refused join
+    await write(x, "x3", "after the refusal");
+    expect(await landed(3)).toBe(3);
+    expect(rejoins.issues()).toHaveLength(1);
     await t.stop();
     room.close();
   }, 20_000);

@@ -91,7 +91,9 @@ export class RelayLink {
     this.name = options.name ?? "relay";
     this.versions = options.versions ?? RELAY_PROTOCOL_VERSIONS;
     this.report = createLinkReport(this.name, () => this.ctx?.now?.() ?? Temporal.Now.instant());
-    this.retained = createRetained(this.name, this.report, options.interest, () => this.wake());
+    this.retained = createRetained(this.name, this.report, options.interest, (later) =>
+      later ? this.redial.again() : this.wake(),
+    );
     this.redial = createRedial(
       omitUndefined({
         dial: options.dial,

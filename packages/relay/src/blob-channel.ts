@@ -36,8 +36,11 @@ interface Download extends Asked {
 
 /** One upload waiting on its answer, and the partition its bytes are billed to. */
 interface Upload extends Asked {
+  readonly hash: string;
   readonly partition: PartitionKey | undefined;
   readonly settle: (refusal: BlobRefusal | undefined) => void;
+  /** Running from the moment it last left: how long a relay may stay silent about it. */
+  silence: ReturnType<typeof setTimeout> | undefined;
 }
 
 /**
@@ -47,7 +50,15 @@ interface Upload extends Asked {
  * arrives first.
  *
  * A request leaves only on a seated session — after the join, never before it — and one whose
- * session ended unanswered is sent again on the next seat. A socket the room closes to re-seat it
+ * session ended unanswered is sent again on the next seat.
+ *
+ * **An upload that cannot leave when it is made — no session seated, or a socket going down
+ * under it — is answered at once and kept until a relay answers it.** It used to wait out {@link BLOB_ANSWER_WAIT} for a relay that was not there and
+ * then be forgotten, so a blob put offline was acknowledged and never left the device, and the
+ * put held its caller for ten seconds doing it (chaos soak, `--blobs`, seeds 2 and 6). Only
+ * silence on the session the upload left on — a relay that predates `blob-stored` — ends the
+ * wait without an answer. A refusal that arrives for an upload already answered is not heard by
+ * its caller: the relay stored nothing, and this device is still the bytes' only holder. A socket the room closes to re-seat it
  * (a narrowed or widened grant, D40) drops what it was asked last, and the answer to that is the
  * room's under the new seat, not a deadline.
  *
@@ -75,6 +86,23 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
     if (seated && send(asked.frame)) asked.sentIn = session;
   };
 
+  /**
+   * Offers an upload, and waits {@link BLOB_ANSWER_WAIT} from the moment it leaves. Silence on
+   * the session it left on is a relay built before `blob-stored`: the wait ends with no answer
+   * and the upload is let go. A session that ended first sends it again on the next seat.
+   */
+  const offerUpload = (upload: Upload): void => {
+    offer(upload);
+    if (upload.sentIn !== session || !seated) return;
+    clearTimeout(upload.silence);
+    const leftIn = session;
+    upload.silence = setTimeout(() => {
+      if (!seated || session !== leftIn) return;
+      keep(uploading, upload.hash, (held) => held !== upload);
+      upload.settle(undefined);
+    }, durationMs(BLOB_ANSWER_WAIT));
+  };
+
   /** Keeps only the waits of this hash that `still` holds, and forgets the hash when none are left. */
   const keep = <W>(waits: Map<string, W[]>, hash: string, still: (wait: W) => boolean): void => {
     const rest = (waits.get(hash) ?? []).filter(still);
@@ -85,22 +113,23 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
   const capability: TransportBlobs = {
     upload: (hash, bytes, options = {}) =>
       new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          keep(uploading, hash, (upload) => upload !== mine);
-          resolve(undefined);
-        }, durationMs(BLOB_ANSWER_WAIT));
         const mine: Upload = {
+          hash,
           frame: blobPutFrame(hash, bytes, options.partition),
           sentIn: undefined,
           partition: options.partition,
+          silence: undefined,
           settle: (refusal) => {
-            clearTimeout(timer);
+            clearTimeout(mine.silence);
             resolve(refusal);
           },
         };
         uploading.set(hash, [...(uploading.get(hash) ?? []), mine]);
         // the relay verifies before it stores
-        offer(mine);
+        offerUpload(mine);
+        // it did not leave — no seat, or a socket going down under it — so there is no relay to
+        // wait on: the put is answered now, and the next seat carries the bytes
+        if (mine.sentIn !== session || !seated) resolve(undefined);
       }),
     download: (hash, { timeoutMs }) =>
       new Promise((resolve) => {
@@ -128,8 +157,10 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
      */
     seated: (): void => {
       seated = true;
-      const pending: Asked[] = [...[...waiting.values()].flat(), ...[...uploading.values()].flat()];
-      for (const asked of pending) if (asked.sentIn !== session) offer(asked);
+      for (const download of [...waiting.values()].flat())
+        if (download.sentIn !== session) offer(download);
+      for (const upload of [...uploading.values()].flat())
+        if (upload.sentIn !== session) offerUpload(upload);
     },
     /** The socket closed: what was asked on it and not answered goes again on the next seat. */
     unseated: (): void => {

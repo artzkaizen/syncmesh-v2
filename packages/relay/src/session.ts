@@ -355,7 +355,11 @@ export function wireSession(
       position(frame.offset);
     } else if (frame.kind === "error") {
       hooks.onRefused(frame.code, frame.floor);
-      dialed.close();
+      // below the room's floor, served nothing, and still heard: what this device holds above
+      // the cursors the room's hello named goes over before it hangs up — its own writes and the
+      // ones it carries for neighbours the room cannot reach (`refusedBelowFloor`)
+      if (frame.code === "retention") pushOutstanding();
+      chain = chain.then(() => dialed.close());
     } else if (!custody.take(frame) && frame.kind === "session") onSession(frame.frame);
     // ka and unknown: the rearm above was the whole point
   });

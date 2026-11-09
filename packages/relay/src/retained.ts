@@ -16,6 +16,9 @@ import { joinPosition } from "./scoped.js";
  * the floor — a fold or an adoption moved it — or when it is woken. A join the room serves clears
  * the issue, and so does stopping the link.
  *
+ * Until then it still hands over: the room takes what a refused device sends before it hangs up,
+ * so a write made here, or a neighbour's carried in, dials once more after the link's backoff.
+ *
  * The floor is the one the refusal carries, cut to the authors the next join would still be
  * below. A device that reached it between its join and the refusal is below none of them, and a
  * relay built before the refusal carried a floor says nothing to cut: either way the link redials
@@ -26,8 +29,11 @@ export function createRetained(
   name: string,
   report: LinkReport,
   interest: Interest | undefined,
-  /** Dial the room now: this device holds the floor. */
-  dial: () => void,
+  /**
+   * Dial the room: now, because this device holds the floor; or `later`, after the link's backoff,
+   * because something new is waiting to be handed over.
+   */
+  dial: (later?: boolean) => void,
 ) {
   let watching: (() => void) | undefined;
   let context: TransportContext | undefined;
@@ -51,7 +57,26 @@ export function createRetained(
       ctx.rejoins?.relayCleared(name);
       dial();
     };
-    const offs = [ctx.engine.onFoldBatch(check), ctx.engine.onAdopt(check)];
+    /**
+     * A write, or one carried in from a neighbour, while the room still refuses: it is handed
+     * over the way the refusal's own push was — a join the room refuses, then everything above
+     * its hello's cursors (`refusedBelowFloor`). Holding off until the floor was held kept every
+     * write after the first refusal off the room for good on a device that reaches the mesh only
+     * through it (chaos soak, `--retention`, seed 22).
+     */
+    const fresh = () => {
+      if (watching === undefined) return;
+      release();
+      dial(true);
+    };
+    const offs = [
+      ctx.engine.onFoldBatch((batch) => {
+        check();
+        if (batch.source === "remote") fresh();
+      }),
+      ctx.engine.onAdopt(check),
+      ctx.engine.onOutbound(fresh),
+    ];
     watching = () => {
       for (const off of offs) off();
     };

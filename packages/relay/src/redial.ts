@@ -16,7 +16,7 @@ import type { RelayDial } from "./transport.js";
 export interface Redial {
   /** Dial now. */
   readonly attempt: () => void;
-  /** Schedule another attempt after the current delay, then double it. */
+  /** Schedule another attempt after the current delay, then double it; replaces one already scheduled. */
   readonly again: () => void;
   /** A session came up: the next failure starts from the first delay again. */
   readonly settled: () => void;
@@ -48,6 +48,8 @@ export function createRedial(options: RedialOptions): Redial {
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const again = (): void => {
+    // one attempt scheduled at a time: a second reason to dial again is the same attempt
+    clearTimeout(timer);
     timer = setTimeout(attempt, backoff);
     backoff = Math.min(backoff * 2, maxMs);
   };
