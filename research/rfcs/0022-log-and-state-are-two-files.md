@@ -285,13 +285,14 @@ to migrate it in place or to rejoin from a peer — neither of which is "no migr
 That is a real limit on the borrowed idea rather than a detail. A young replica gets the clean
 version; an old one gets a migration or a rejoin, and has to be told which.
 
-The same limit reaches every device that joined by snapshot, and joining by snapshot is the
-normal path for a new device (gaps U33): its log records the install's floor, so `refoldable` is
-`false` from its first boot and a table-shape schema change refuses with "Keep the previous
-schema, or rejoin from a peer" exactly as it does over a compacted log. So "young replica" means
-"filled by events", not "new". A migration that copies rows from the old state file into the new
-one is what lets these devices take a schema change in place; it is planned, not built
-(decided 2026-11-08, Jace delegated the call: refusing is the safe default until it exists).
+A device that joined by snapshot, the normal path for a new one, is not refused (gaps U33,
+decided 2026-11-09, Jace delegated the call): its log records the install's floor, and keeps every
+event it was sent, so a new state file folds whole above that floor. What lies under it the engine
+names (`Engine.rebuiltBelow`) and the mesh raises as D46's `$recovery` issue (`BelowInstalledFloor`,
+reason `rebuilt`), cleared once peers' events or a peer's state bring the coverage back up. The
+2026-11-08 build refused the schema change instead ("Keep the previous schema, or rejoin from a
+peer"), as over a compacted log. A migration that copies rows from the old state file into the new
+one would keep those rows on the device through the change; it is still planned, not built.
 
 This is what makes the fingerprint added in `syncmesh_meta` this week
 *mostly* redundant: it compares DDL text and then reinstalls in place, which
