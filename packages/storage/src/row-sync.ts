@@ -34,7 +34,7 @@ export const ackedTableName = (dialect: SqlDialect = "sqlite"): string =>
  */
 export const ROW_SYNC_NOUN = "row_sync";
 
-export const rowSyncDdlFor = (dialect: SqlDialect = "sqlite"): readonly string[] => [
+export const rowSyncDdl = (dialect: SqlDialect = "sqlite"): readonly string[] => [
   ...namespaceDdl(dialect),
   `CREATE TABLE IF NOT EXISTS ${rowSyncTableName(dialect)} (
     tbl TEXT NOT NULL,

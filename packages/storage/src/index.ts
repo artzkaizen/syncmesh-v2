@@ -66,7 +66,7 @@ export {
   ackedTableName,
   rowSyncTableName,
   operationOfSql,
-  rowSyncDdlFor,
+  rowSyncDdl,
   rowSyncTable,
   syncOfSql,
 } from "./row-sync.js";

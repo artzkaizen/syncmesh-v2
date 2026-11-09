@@ -572,7 +572,8 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
 
 describe("a lineage cell stays bounded however often a document is replaced (gaps U21)", () => {
   const DAY = 86_400_000;
-  const cellOf = (n: Node) => getRecord(n.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value;
+  const contentCell = (n: Node) =>
+    getRecord(n.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value;
   const genesesIn = (value: CellValue | undefined) =>
     isJsonArray(value) ? Object.keys(value[1] ?? {}).length : 0;
 
@@ -585,7 +586,7 @@ describe("a lineage cell stays bounded however often a document is replaced (gap
     for (let i = 0; i < 12; i += 1) {
       a.clock.set(100 + (i + 1) * 31 * DAY);
       events.push(await write(a, (tx) => tx.doc(NOTES, N1, replace(i))));
-      sizes.push(genesesIn(cellOf(a)));
+      sizes.push(genesesIn(contentCell(a)));
     }
     // from the second replace on, each settles the walk at the one before it
     expect(sizes).toEqual([1, ...Array.from({ length: 11 }, () => 1)]);
@@ -611,7 +612,7 @@ describe("a lineage cell stays bounded however often a document is replaced (gap
       const change = replaced.changes[0];
       expect(change?.kind === "doc" && change.settles).toBeUndefined();
     }
-    expect(genesesIn(cellOf(a))).toBe(4);
+    expect(genesesIn(contentCell(a))).toBe(4);
   });
 
   test("a window shorter than an hour is taken as an hour", async () => {

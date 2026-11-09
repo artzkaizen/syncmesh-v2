@@ -47,7 +47,6 @@ export const GRANDFATHERED: ReadonlySet<string> = new Set([
   "requestOf",
   "roomOf",
   "rowsOf",
-  "rowSyncDdlFor",
   "scaleOf",
   "schemaOf",
   "scopeOf",

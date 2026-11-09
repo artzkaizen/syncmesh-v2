@@ -19,13 +19,13 @@ const coverage: Coverage = {
   local: new Map([[A, seq(2)]]),
 };
 const open = async (driver: SqlDriver) => (await sqlStateStore(driver)).unwrap();
-const bodyOf = async (store: StateStore) => {
+const storedBody = async (store: StateStore) => {
   const value = (await store.loadAll()).unwrap().get(NOTES)?.get(N1)?.cells.get(BODY)?.value;
   return value instanceof Uint8Array ? undefined : JSON.stringify(value);
 };
 const write = (store: StateStore, body: string, ms: number, cov = coverage) =>
   store.commit([{ table: NOTES, key: N1, record: record(body, ms) }], cov);
-const cursorsOf = async (store: StateStore) => {
+const storedCursors = async (store: StateStore) => {
   const c = (await store.loadCursors()).unwrap();
   return [c.synced.get(A), c.synced.get(B), c.local.get(A)];
 };
@@ -109,7 +109,7 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
         false,
         "the row is gone",
       );
-      equal(await cursorsOf(store), [seq(3), seq(1), seq(2)], "cursors untouched");
+      equal(await storedCursors(store), [seq(3), seq(1), seq(2)], "cursors untouched");
     },
   },
   {
@@ -121,7 +121,7 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       equal((await store.isEmpty()).unwrap(), false, "empty after commit");
       const loaded = (await store.loadAll()).unwrap().get(NOTES)?.get(N1);
       equal(loaded && encodeRecord(loaded), encodeRecord(record("a", 1)), "record bytes");
-      equal(await cursorsOf(store), [seq(3), seq(1), seq(2)], "coverage");
+      equal(await storedCursors(store), [seq(3), seq(1), seq(2)], "coverage");
     },
   },
   {
@@ -130,9 +130,9 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       const store = await open(await openDriver("state-replace"));
       (await write(store, "a", 1)).unwrap();
       (await write(store, "b", 2, { synced: new Map([[A, seq(4)]]), local: new Map() })).unwrap();
-      equal(await bodyOf(store), '"b"', "replaced body");
+      equal(await storedBody(store), '"b"', "replaced body");
       equal((await store.loadAll()).unwrap().get(NOTES)?.size, 1, "one row");
-      equal(await cursorsOf(store), [seq(4), seq(1), seq(2)], "cursors raised, others kept");
+      equal(await storedCursors(store), [seq(4), seq(1), seq(2)], "cursors raised, others kept");
     },
   },
   {
@@ -186,7 +186,7 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       const first = await openDriver("state-durable");
       (await write(await open(first), "a", 1)).unwrap();
       await first.close?.();
-      equal(await bodyOf(await open(await openDriver("state-durable"))), '"a"', "after reopen");
+      equal(await storedBody(await open(await openDriver("state-durable"))), '"a"', "after reopen");
     },
   },
   {

@@ -10,7 +10,7 @@ import type { StrictCapture } from "./guard.js";
 import { captureStatements, installCapture } from "./capture.js";
 import { driverDialect } from "./dialect.js";
 import { guardStatements, installGuard } from "./guard.js";
-import { rowSyncDdlFor } from "./row-sync.js";
+import { rowSyncDdl } from "./row-sync.js";
 import { attempt } from "./sql.js";
 
 /**
@@ -44,8 +44,8 @@ export const installSchema = (
 ): Promise<Result<void, StoreFailure>> =>
   Result.gen(async function* () {
     const { schema, name: dialect } = driverDialect(driver);
-    const rowSyncDdl = rowSyncDdlFor(dialect);
-    const wanted = [...captureStatements(driver, tables), ...rowSyncDdl].join(";\n");
+    const syncDdl = rowSyncDdl(dialect);
+    const wanted = [...captureStatements(driver, tables), ...syncDdl].join(";\n");
     // the strict guard has its own row: it is no part of the tables' shape, so turning it on or
     // off neither renames the state file nor counts as a shape change a compacted log refuses
     const guard = guardStatements(driver, tables, strict).join(";\n");
@@ -83,7 +83,7 @@ export const installSchema = (
         await installCapture(driver, tables, { strict: strict ?? true }).then((done) =>
           done.unwrap(),
         );
-        for (const statement of rowSyncDdl) await driver.run(statement);
+        for (const statement of syncDdl) await driver.run(statement);
         await driver.run(schema.write, [wanted]);
         await driver.run(schema.writeGuard, [guard]);
       }),

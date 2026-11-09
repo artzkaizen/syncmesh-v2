@@ -113,10 +113,10 @@ const WORDS =
     " ",
   );
 
-export const partitionsOf = (count: number): readonly PartitionKey[] =>
+export const teamPartitions = (count: number): readonly PartitionKey[] =>
   Array.from({ length: count }, (_, i) => parsePartitionKey(`workspace:team${i}`).unwrap());
 
-export const authorsOf = (): readonly PeerId[] =>
+export const tenantAuthors = (): readonly PeerId[] =>
   Array.from({ length: AUTHORS }, (_, i) =>
     parsePeerId(i.toString(16).padStart(2, "0").repeat(32)).unwrap(),
   );
@@ -134,8 +134,8 @@ export interface Tenant {
 /** A tenant's generator. Every call continues the same log: sequence numbers, clock and ids. */
 export function tenant(options: { readonly partitions: number; readonly seed: number }): Tenant {
   const random = seeded(options.seed);
-  const partitions = partitionsOf(options.partitions);
-  const authors = authorsOf();
+  const partitions = teamPartitions(options.partitions);
+  const authors = tenantAuthors();
   const seqs = authors.map(() => 0);
   // per table, per team: a row lives in the team its event was written in, and stays there
   const counters = new Map<string, number[]>(TABLES.map((x) => [x.name, partitions.map(() => 0)]));
@@ -147,7 +147,7 @@ export function tenant(options: { readonly partitions: number; readonly seed: nu
     list[Math.floor(random() * list.length)] ?? panic("picked from an empty list");
   const words = (n: number) => Array.from({ length: n }, () => pick(WORDS)).join(" ");
 
-  const rowFor = (tableName: string, id: string, at: number): Map<ColumnName, CellValue> => {
+  const tenantRow = (tableName: string, id: string, at: number): Map<ColumnName, CellValue> => {
     const cells: [string, CellValue][] = [["id", id]];
     if (tableName === "issues")
       cells.push(
@@ -186,19 +186,19 @@ export function tenant(options: { readonly partitions: number; readonly seed: nu
     return new Map(cells.map(([k, v]) => [col(k), v]));
   };
 
-  const tableFor = (): string => {
+  const drawTable = (): string => {
     const roll = random();
     return (MIX.find(([, upTo]) => roll < upTo) ?? panic("the mix ends at 1"))[0];
   };
 
   const change = (mode: "insert" | "mixed", team: number, at: number): Change => {
-    const tableName = tableFor();
+    const tableName = drawTable();
     const perTeam = counters.get(tableName) ?? panic("every table has its counters");
     const live = perTeam[team] ?? 0;
     if (mode === "mixed" && live > 0 && random() < 0.7) {
       // an update: one or two columns of a row this team already wrote, as edits are
       const id = `${tableName}-${team}-${1 + Math.floor(random() * live)}`;
-      const whole = rowFor(tableName, id, at);
+      const whole = tenantRow(tableName, id, at);
       const patch = new Map(
         [...whole].filter(([k]) => k !== col("id") && k !== col("created_at")).slice(0, 2),
       );
@@ -213,7 +213,7 @@ export function tenant(options: { readonly partitions: number; readonly seed: nu
       kind: "insert",
       table: name(tableName),
       key: id as RowKey,
-      row: rowFor(tableName, id, at),
+      row: tenantRow(tableName, id, at),
     };
   };
 
