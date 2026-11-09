@@ -602,6 +602,26 @@ describe("a lineage cell stays bounded however often a document is replaced (gap
       deriveLineage(PEER_A, seq(2), 0),
     );
   });
+
+  test("a window in weeks or months is measured, not refused", async () => {
+    for (const given of [{ weeks: 6 }, { months: 1 }, { years: 1 }]) {
+      const a = setup(PEER_A, 100, {
+        docs: DOCS,
+        validate,
+        docAdapters: new Set([LORO]),
+        lineageSettleAfter: Temporal.Duration.from(given),
+      });
+      await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+      a.clock.set(100 + DAY);
+      await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+      a.clock.set(100 + 2 * DAY);
+      const inside = (await write(a, (tx) => tx.doc(NOTES, N1, replace(2)))).changes[0];
+      expect(inside?.kind === "doc" && inside.settles).toBeUndefined();
+      a.clock.set(100 + 400 * DAY);
+      const past = (await write(a, (tx) => tx.doc(NOTES, N1, replace(3)))).changes[0];
+      expect(past?.kind === "doc" && past.settles?.lineage).toBe(deriveLineage(PEER_A, seq(3), 0));
+    }
+  });
 });
 
 describe("a lineage read back for a restore (RFC-0023 §5.3)", () => {

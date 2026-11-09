@@ -11,7 +11,7 @@ import type {
 
 import { getRecord, docLineage, withDocColumns } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
-import { Temporal } from "@syncmesh/temporal";
+import { Temporal, durationMs } from "@syncmesh/temporal";
 import { bytesEqual } from "@syncmesh/wire";
 
 import type { DocEditorApi } from "./doc-editor.js";
@@ -69,10 +69,13 @@ export const DEFAULT_LINEAGE_SETTLE_AFTER = Temporal.Duration.from({ days: 30 })
 /** The shortest {@link DocEngineOptions.lineageSettleAfter} an engine runs with. */
 export const MIN_LINEAGE_SETTLE_AFTER = Temporal.Duration.from({ hours: 1 });
 
-/** The settle window an engine runs with: the one given, the default, and never below the floor. */
+/**
+ * The settle window an engine runs with: the one given, the default, and never below the floor.
+ * Weeks, months and years are measured as {@link durationMs} measures them.
+ */
 export const settleWindow = (given: Temporal.Duration | undefined): Temporal.Duration => {
   const window = given ?? DEFAULT_LINEAGE_SETTLE_AFTER;
-  return Temporal.Duration.compare(window, MIN_LINEAGE_SETTLE_AFTER) < 0
+  return durationMs(window) < durationMs(MIN_LINEAGE_SETTLE_AFTER)
     ? MIN_LINEAGE_SETTLE_AFTER
     : window;
 };
@@ -106,7 +109,8 @@ export interface LineageLog {
   /**
    * Parts of the lineage this device cannot read back: updates whose events compaction took after
    * its snapshot was replaced, a genesis never received, or a root history an installed snapshot
-   * adopted without events. Anything above 0 is a partial version.
+   * adopted without events. Anything above 0 is a partial version. Not an exact count: a genesis an
+   * anchor trimmed whose event compaction also took is counted twice, once each way.
    */
   readonly lost: number;
 }
