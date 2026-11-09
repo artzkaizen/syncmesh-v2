@@ -208,8 +208,8 @@ const openCases = (death: Death) => {
           openIn(directory, "first"),
           openIn(directory, "second"),
         ]);
-        if (first.isErr() || second.isErr())
-          throw new Error(`refused at once: ${told(first.isErr() ? first.error : second.error)}`);
+        if (first.isErr()) throw new Error(`refused at once: ${told(first.error)}`);
+        if (second.isErr()) throw new Error(`refused at once: ${told(second.error)}`);
         await first.value.run("CREATE TABLE syncmesh.kept (a TEXT)");
         await second.value.run("CREATE TABLE syncmesh.kept (a TEXT)");
         await first.value.close?.();

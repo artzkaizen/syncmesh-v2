@@ -100,22 +100,21 @@ describe("what the host answers whatever its answer does", () => {
   });
 
   test("a request whose answer throws is still answered, so the page is not left waiting", async () => {
-    const replies: unknown[] = [];
-    const port = {
-      postMessage: (message: unknown) => void replies.push(message),
-      onmessage: null as ((event: MessageEvent) => void) | null,
-    };
-    serveSqlite(port);
-    // a request that throws the moment the host reads what it asks for
+    const wire = new MessageChannel();
+    serveSqlite(wire.port2);
+    const replied = new Promise((settle) => {
+      wire.port1.onmessage = ({ data }) => settle(data);
+    });
+    // a request that throws the moment the host reads what it asks for, handed to the host as its
+    // port would hand it a message: a clone across the port could not carry the getter
     const request = {
       id: 7,
       get kind(): never {
         throw new Error("unreadable request");
       },
     };
-    port.onmessage?.(new MessageEvent("message", { data: request }));
-    // the reply is a few promise turns away; a macrotask is past all of them
-    await new Promise((next) => setImmediate(next));
-    expect(replies).toEqual([expect.objectContaining({ id: 7, ok: false })]);
+    wire.port2.onmessage?.(new MessageEvent("message", { data: request }));
+    expect(await replied).toEqual(expect.objectContaining({ id: 7, ok: false }));
+    wire.port1.close();
   });
 });
