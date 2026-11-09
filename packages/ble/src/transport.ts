@@ -2,7 +2,12 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportContext, Upgraded } from "@syncmesh/transport";
 
 import { Result, omitUndefined } from "@syncmesh/result";
-import { createBackoff, createFrameTransport, createLiveness } from "@syncmesh/transport";
+import {
+  DEFAULT_KEEPALIVE_MS,
+  createBackoff,
+  createFrameTransport,
+  createLiveness,
+} from "@syncmesh/transport";
 
 import type { BleRadio, Unsubscribe } from "./radio.js";
 import type { BleSighting } from "./sighting.js";
@@ -107,6 +112,32 @@ interface Held {
   readonly connectionId?: string | undefined;
 }
 
+/**
+ * When a proven link last carried a packet in: the evidence a `wake` reads before it restarts.
+ *
+ * `Transport.wake` must be free on a radio that is carrying, and a restart is not: it drops every
+ * session this device holds, and the neighbour on the far side of each is told nothing — it keeps
+ * a link to a session that no longer exists, believes it already has the peer, does not dial, and
+ * waits out its liveness deadline, 12.5 seconds, before anything crosses again. A reachability
+ * knock wakes every medium, so every network change did that to every Bluetooth neighbour (chaos
+ * soak, `--blobs`, seed 3 at four devices). A proven link heard inside one keepalive is a radio
+ * that works, and a wake leaves it alone; one that has heard nothing is restarted as before.
+ */
+const carrying = (proven: ReadonlyMap<string, PeerId>, everyMs: number) => {
+  let heardAt: number | undefined;
+  return {
+    /** The link deadline, noting a proven link's packet as it re-arms the link's own. */
+    watching: <L extends { readonly heard: (hint: string) => void }>(liveness: L): L => ({
+      ...liveness,
+      heard: (hint: string): void => {
+        liveness.heard(hint);
+        if (proven.has(hint)) heardAt = Date.now();
+      },
+    }),
+    recently: (): boolean => heardAt !== undefined && Date.now() - heardAt < everyMs,
+  };
+};
+
 /** Closes whichever link is holding this peer, by the hint the radio knows it by. */
 const dropPeer = (
   proven: ReadonlyMap<string, PeerId>,
@@ -142,16 +173,20 @@ const linkDeadline = (
     readonly drop: (why: string) => void;
     readonly close: (hint: string) => void;
     readonly probe: () => void;
+    /** Where a proven link's packet is noted for `wake` (see {@link carrying}). */
+    readonly working: ReturnType<typeof carrying>;
   },
 ) =>
-  createLiveness<string>({
-    ...omitUndefined({ everyMs: options.keepaliveMs }),
-    probe: on.probe,
-    dead: (hint) => {
-      on.drop(`${hint} went quiet and was hung up on`);
-      on.close(hint);
-    },
-  });
+  on.working.watching(
+    createLiveness<string>({
+      ...omitUndefined({ everyMs: options.keepaliveMs }),
+      probe: on.probe,
+      dead: (hint) => {
+        on.drop(`${hint} went quiet and was hung up on`);
+        on.close(hint);
+      },
+    }),
+  );
 
 /**
  * Connect, find the characteristic, subscribe, and take whatever MTU we are given.
@@ -202,6 +237,7 @@ export function bleTransport(options: BleOptions): Transport {
   let stopLiveness: (() => void) | undefined;
   /** Holds the two reasons to restart to one at a time. See {@link createRestart}. */
   const restart = createRestart<TransportContext>();
+  const working = carrying(proven, options.keepaliveMs ?? DEFAULT_KEEPALIVE_MS);
 
   /**
    * What `open` was called with, kept so the radio coming back can repeat it.
@@ -253,6 +289,7 @@ export function bleTransport(options: BleOptions): Transport {
         drop,
         close: (hint) => closeLink(hint),
         probe: () => transport.resync?.(),
+        working,
       });
       stopLiveness = alive.stop;
       const seen = discovery(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs });
@@ -432,9 +469,11 @@ export function bleTransport(options: BleOptions): Transport {
      * every peer and tears down scanning and advertising, so `start` is publishing into a clean
      * state rather than stacking a second scan on a live one. `@syncmesh/ble`'s own radio bridge
      * waits for `poweredOn` before any of it reaches the platform, so calling this while the
-     * adapter is still off costs a promise and nothing else.
+     * adapter is still off costs a promise and nothing else. A radio a proven link was heard on
+     * inside one keepalive is not restarted at all: see {@link carrying}.
      */
     wake: () => {
+      if (working.recently()) return;
       void reopen?.().catch((cause: unknown) =>
         drop(`the radio would not restart: ${cause instanceof Error ? cause.message : "unknown"}`),
       );

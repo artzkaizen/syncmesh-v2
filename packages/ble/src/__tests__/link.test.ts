@@ -1,9 +1,11 @@
+import { bodyOf, suitePeers, write } from "@syncmesh/transport/transport-tests";
 import { describe, expect, test } from "bun:test";
 
 import type { LinkOptions } from "../link.js";
 
+import { hintOf } from "../advert.js";
 import { base64ToBytes, bytesToBase64 } from "../base64.js";
-import { bleLink } from "../link.js";
+import { LINK_TAG_BYTES, bleLink } from "../link.js";
 import {
   ATT_MAX_ATTRIBUTE_LENGTH,
   MINIMUM_PAYLOAD,
@@ -11,6 +13,8 @@ import {
   subscriberLimit,
   writeLimit,
 } from "../radio.js";
+import { virtualAir } from "../testing/virtual-air.js";
+import { bleTransport } from "../transport.js";
 
 const SERVICE = "19d74c40-95d0-4b3c-a4a3-d4a8c8bdfe01";
 const CHAR = "19d74c41-95d0-4b3c-a4a3-d4a8c8bdfe01";
@@ -61,9 +65,15 @@ describe("a BLE link", () => {
     dialler.send(bytes(20));
     dialled.send(bytes(20));
     await settle();
-
+    // the dialled end answers under the tag its peer writes with, so it waits to hear one
     expect(a.writes).toHaveLength(1);
+    expect(a.notifies).toHaveLength(0);
+
+    dialled.accept(a.writes[0]!);
+    await settle();
     expect(a.notifies).toHaveLength(1);
+    const tagOf = (value: string) => base64ToBytes(value).unwrap().subarray(0, LINK_TAG_BYTES);
+    expect(tagOf(a.notifies[0]!)).toEqual(tagOf(a.writes[0]!));
   });
 
   test("a frame goes out fragmented and comes back whole", async () => {
@@ -257,5 +267,89 @@ describe("base64 at the radio boundary", () => {
     expect(base64ToBytes("a").isErr()).toBe(true);
     expect(base64ToBytes("!!!!").isErr()).toBe(true);
     expect(base64ToBytes("aGVsbG8=" + "ÿ").isErr()).toBe(true);
+  });
+});
+
+/**
+ * A peripheral notifies every central subscribed to it at once, so two neighbours dialling one
+ * device each hear the other's frames. Before every packet named its link, a central filed its
+ * neighbour's hello under its own link to that peripheral, read it as the peer re-keying, and
+ * replaced a live session with one nobody held the secret for — found by the chaos soak (seed 18,
+ * six devices, no switches: hundreds of `the frame did not open under the session key`).
+ */
+/** Three real `bleTransport`s in one room of the virtual air, every link up and settled. */
+const room = async () => {
+  const air = virtualAir();
+  const peers = suitePeers();
+  const events: string[] = [];
+  const transports = peers.map((peer, i) =>
+    bleTransport({
+      radio: air.radioFor(hintOf(peer.identity.peerId)),
+      serviceUuid: SERVICE,
+      characteristicUuid: CHAR,
+      name: `ble:${i}`,
+    }),
+  );
+  for (const transport of transports)
+    transport.onLinkEvent?.((event) => {
+      if (event.why !== undefined) events.push(`${event.kind}: ${event.why}`);
+    });
+  await Promise.all(transports.map((transport, i) => transport.start(peers[i]!)));
+  const settle = async (rounds = 1) => {
+    for (let round = 0; round < rounds * 6; round += 1) {
+      await air.settle();
+      for (const transport of transports) await transport.flush?.();
+    }
+  };
+  await settle();
+  const crossed = (id: string, body: string) => peers.every((peer) => bodyOf(peer, id) === body);
+  const stop = () => Promise.all(transports.map((transport) => transport.stop()));
+  return { air, peers, events, transports, settle, crossed, stop };
+};
+
+/**
+ * A peripheral notifies every central subscribed to it at once, so two neighbours dialling one
+ * device each hear the other's frames. Before every packet named its link, a central filed its
+ * neighbour's hello under its own link to that peripheral, read it as the peer re-keying, and
+ * replaced a live session with one nobody held the secret for — found by the chaos soak (seed 18,
+ * six devices, no switches: hundreds of `the frame did not open under the session key`).
+ */
+describe("two centrals on one peripheral", () => {
+  test("each reads only its own link: no session is replaced and every write crosses", async () => {
+    const { air, peers, events, settle, crossed, stop } = await room();
+    // a room of three: each pair dials once, so one device is the peripheral to the other two
+    expect(air.connections()).toBe(3);
+
+    for (const [i, peer] of peers.entries())
+      expect((await write(peer, `n${i}`, `from ${i}`)).isOk()).toBe(true);
+    await settle(10);
+
+    for (const [i] of peers.entries()) expect(crossed(`n${i}`, `from ${i}`)).toBe(true);
+    expect(events).toEqual([]);
+    await stop();
+  });
+});
+
+/**
+ * `Transport.wake` must be free on a healthy transport, and a reachability knock wakes every
+ * medium. On BLE it restarted the radio, dropping every session; the neighbour on the far side of
+ * each was told nothing, kept a link to a session that no longer existed, and did not dial again
+ * until its liveness deadline — so every network change cut a device off from its Bluetooth
+ * neighbours for 12.5 seconds (chaos soak, `--blobs`, seed 3 at four devices).
+ */
+describe("a wake on a radio that is carrying", () => {
+  test("drops no session, and the next write crosses at once", async () => {
+    const { peers, events, transports, settle, crossed, stop } = await room();
+    expect((await write(peers[0]!, "before", "the wake")).isOk()).toBe(true);
+    await settle(2);
+    expect(crossed("before", "the wake")).toBe(true);
+
+    for (const transport of transports) transport.wake?.();
+    await settle();
+    expect((await write(peers[2]!, "after", "the wake")).isOk()).toBe(true);
+    await settle(2);
+    expect(crossed("after", "the wake")).toBe(true);
+    expect(events).toEqual([]);
+    await stop();
   });
 });

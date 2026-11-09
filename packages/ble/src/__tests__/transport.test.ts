@@ -15,6 +15,7 @@ import type {
 import { hintOf } from "../advert.js";
 import { base64ToBytes } from "../base64.js";
 import { HEADER_BYTES } from "../fragment.js";
+import { LINK_TAG_BYTES } from "../link.js";
 import { bleTransport } from "../transport.js";
 
 const SERVICE = "19d74c40-95d0-4b3c-a4a3-d4a8c8bdfe01";
@@ -199,7 +200,9 @@ describe("the BLE transport", () => {
     await settle();
 
     // the negotiated MTU leaves room for a whole handshake frame, so one packet is one frame
-    const kinds = radio.writes.map((w) => base64ToBytes(w.value).unwrap()[HEADER_BYTES]);
+    const kinds = radio.writes.map(
+      (w) => base64ToBytes(w.value).unwrap()[LINK_TAG_BYTES + HEADER_BYTES],
+    );
     expect(kinds[0]).toBe(HELLO);
     // the bridge's grants and cursors are held until the session opens, so nothing else is bare
     expect(kinds.slice(1).every((kind) => kind === SEALED || kind === undefined)).toBe(true);

@@ -143,5 +143,12 @@ export const judgeAdvert = (
     mine: () => hint !== undefined && shouldDial(on.self, hint),
     ready: () => on.backoff.ready(key),
   });
+  /**
+   * A sighting turned away for its backoff is not one this device has acted on. `fresh` recorded
+   * it, so the advertisement after the backoff ran out read as `already-known` — and since every
+   * advertisement refreshes the record, a peer whose door refused once, or whose dial failed, was
+   * never dialled again for as long as it stayed in range (chaos soak, `--grants fault`, seed 6).
+   */
+  if (verdict === "backing-off") on.seen.forget(key);
   return { hint, key, verdict };
 };

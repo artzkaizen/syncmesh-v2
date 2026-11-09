@@ -1,8 +1,12 @@
+import { parsePeerId } from "@syncmesh/kernel";
+import { createBackoff } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
 import type { Rungs } from "../sighting.js";
 
-import { judge } from "../sighting.js";
+import { advertisement } from "../advert.js";
+import { discovery } from "../dial.js";
+import { judge, judgeAdvert } from "../sighting.js";
 
 /** Every rung open, and silent by default, so a test names only what it is changing. */
 const open = (shut: Partial<Rungs> = {}): Rungs => ({
@@ -99,5 +103,26 @@ describe("what a radio decides about an advertisement", () => {
     });
     expect(verdict).toBe("dialling-unnamed");
     expect(asked).toEqual([]);
+  });
+});
+
+describe("a peer turned away for its backoff", () => {
+  test("is dialled at its first advertisement after the backoff runs out", () => {
+    let ms = 0;
+    const seen = discovery();
+    const backoff = createBackoff({ now: () => ms });
+    const serviceUuid = "19d74c40-95d0-4b3c-a4a3-d4a8c8bdfe01";
+    const peer = parsePeerId("f".repeat(64)).unwrap();
+    const advert = { peripheralId: "phone-b", ...advertisement(peer, serviceUuid) };
+    const on = { self: "0000", serviceUuid, ours: undefined, seen, backoff };
+
+    const first = judgeAdvert(advert, on);
+    expect(first.verdict).toBe("dialling");
+    // its door refused us: the link closes, forgetting the peer, and the backoff starts
+    backoff.failed(first.key);
+    seen.forget(first.key);
+    expect(judgeAdvert(advert, on).verdict).toBe("backing-off");
+    ms += 60_000;
+    expect(judgeAdvert(advert, on).verdict).toBe("dialling");
   });
 });
