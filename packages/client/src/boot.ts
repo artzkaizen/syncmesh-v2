@@ -9,7 +9,14 @@ import type {
   Validator,
   ValidatorOptions,
 } from "@syncmesh/engine";
-import type { DocColumns, MergeSpec, PeerId, SchemaVersion, TableName } from "@syncmesh/kernel";
+import type {
+  AdapterId,
+  DocColumns,
+  MergeSpec,
+  PeerId,
+  SchemaVersion,
+  TableName,
+} from "@syncmesh/kernel";
 import type { DocColumnEntry, Table } from "@syncmesh/schema";
 import type {
   OpenStoresOptions,
@@ -49,6 +56,10 @@ export interface BootOptions {
   readonly issuer?: PeerId;
   readonly authority?: PeerId;
   readonly undoDepth?: number;
+  /** How long after a replace its lineage counts as settled (gaps U21); the engine's default when absent. */
+  readonly lineageSettleAfter?: Temporal.Duration;
+  /** The document adapters this device holds (`MeshOptions.documents`); absent, the `adapter-missing` mode. */
+  readonly docAdapters?: ReadonlySet<AdapterId>;
   readonly store?: EventStore;
   readonly stateStore?: StateStore;
   /** Your own SQLite connection: tables and capture are installed on it and it becomes the log too. */
@@ -147,7 +158,7 @@ async function defaultStores(
  * The manifest's document columns keyed the way the kernel keys them: per table, each column and
  * its adapter. Absent when the schema declares none.
  */
-function docColumns(schema: BootOptions["schema"]): DocColumns | undefined {
+export function docColumns(schema: BootOptions["schema"]): DocColumns | undefined {
   if (schema.docs === undefined || schema.docs.size === 0) return undefined;
   return new Map(
     [...schema.docs].map(([table, entries]) => [
@@ -246,6 +257,10 @@ function engineSettings(
     });
   if (options.undoDepth !== undefined)
     Object.assign(engineOptions, { undoDepth: options.undoDepth });
+  if (options.lineageSettleAfter !== undefined)
+    Object.assign(engineOptions, { lineageSettleAfter: options.lineageSettleAfter });
+  if (options.docAdapters !== undefined)
+    Object.assign(engineOptions, { docAdapters: options.docAdapters });
   if (options.onError !== undefined) Object.assign(engineOptions, { onError: options.onError });
   return engineOptions;
 }

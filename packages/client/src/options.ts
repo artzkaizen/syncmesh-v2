@@ -15,6 +15,7 @@ import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Entropy, Identity, PartitionKeys } from "@syncmesh/wire";
 
 import type { SessionProvider } from "./auth.js";
+import type { MeshDocuments } from "./documents.js";
 import type { Knock, MeshShaping } from "./transports.js";
 
 /**
@@ -140,6 +141,18 @@ export interface MeshOptions<
    */
   readonly clockDrift?: Temporal.Duration;
   readonly undoDepth?: number;
+  /**
+   * How long after a document's `replace()` its lineage counts as settled (gaps U21): a replace
+   * this device writes later anchors the lineage walk there, and every genesis stamped at or
+   * below the anchor leaves the document's lineage cell on every peer, so the cell stays bounded.
+   * A device that held an older replace unsent for longer finds it off the walk. Default 30 days.
+   */
+  readonly lineageSettleAfter?: Temporal.Duration;
+  /**
+   * The document runtime (RFC-0023 §4.3): the adapters this device opens its document columns
+   * with, as `mesh.docs`. Absent, document columns fold, are kept and forwarded, and none opens.
+   */
+  readonly documents?: MeshDocuments;
 }
 
 /** Who this mesh trusts, and the private halves only the peer that *is* one of them holds. */

@@ -1,6 +1,6 @@
 export type { Brand, Ordering } from "./primitives.js";
 export type { Hlc, Logical, HlcClock, HlcClockOptions } from "./hlc.js";
-export { DEFAULT_MAX_DRIFT, createHlcClock, compareHlc, hlcOf } from "./hlc.js";
+export { DEFAULT_MAX_DRIFT, LOGICAL_MAX, createHlcClock, compareHlc, hlcOf } from "./hlc.js";
 export type { PeerId } from "./peer-id.js";
 export { InvalidPeerId, PEER_ID_HEX, parsePeerId } from "./peer-id.js";
 export type { AccountId } from "./account-id.js";
@@ -14,30 +14,32 @@ export { isRowChange } from "./change.js";
 export type {
   ActionId,
   AdapterId,
-  CellRule,
   DocBlobRef,
   DocChange,
   DocColumns,
   DocUpdate,
-  Genesis,
   LineageId,
 } from "./doc.js";
+export { InvalidDocId, parseActionId, parseAdapterId, parseLineageId } from "./doc.js";
+export type { Genesis, LineageCell, SettledLineage } from "./lineage-cell.js";
 export {
   GENESIS_RULE,
-  InvalidDocId,
+  SETTLED_RULE,
   LineageCellRefused,
-  cellRules,
   cellGeneses,
-  lineageCell,
-  docLineage,
-  lineageRule,
-  parseActionId,
-  parseAdapterId,
   parseLineageCells,
-  parseLineageId,
+  readLineageCell,
+} from "./lineage-cell.js";
+export type { CellRule } from "./lineage.js";
+export {
+  cellRules,
+  docLineage,
+  lineageCell,
+  lineageRule,
+  settleWalk,
   winningLineage,
   withDocColumns,
-} from "./doc.js";
+} from "./lineage.js";
 export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";
 export { compareValue, counterDelta, counterValue, strategies } from "./strategy.js";
 export type { KeyedRecord, State, TableState } from "./state.js";

@@ -20,6 +20,7 @@ import { openBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
 import { createPolicyQuestions } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
+import { openDocuments } from "./documents.js";
 import { createDrafts } from "./drafts.js";
 import { createFlush } from "./flush.js";
 import { openGrants, restoreGrants, type MeshGrants } from "./grants.js";
@@ -223,6 +224,11 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   );
   // a device holding nothing asks for state instead of history; one that holds coverage does not
   void joinIfEmpty(engine, { ready: links.ready, list: links.list });
+  const docs = openDocuments(engine, schema, options.documents, {
+    blobs,
+    store: blobStore,
+    links,
+  });
 
   const surface: Mesh<D, PC> = {
     engine,
@@ -279,6 +285,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     },
     transports: transportsSurface(links),
     stop: async () => {
+      await docs?.stop(); // a paced burst goes, and a blob offer under way ends, before transports close
       swept.stop();
       wired.stop();
       syncStates.stop();
@@ -292,6 +299,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     },
   };
   if (wired.view !== undefined) Object.assign(surface, { operations: wired.view });
+  if (docs !== undefined) Object.assign(surface, { docs: docs.documents });
   // drafts and the read-only door both live on the app's own connection; a mesh over a bare
   // event store keeps neither, and says so by leaving them absent
   if (booted.driver !== undefined) {

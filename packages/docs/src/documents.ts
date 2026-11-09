@@ -6,12 +6,13 @@ import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { AnyAdapter, UpdateRejected } from "./adapter.js";
+import type { DocBlobs } from "./blobs.js";
 import type { DocStatus, Entry, FlushError } from "./entry.js";
 import type { AdapterMissing, NotADocColumn } from "./errors.js";
 import type { Derive, DocsEngine } from "./materialise.js";
 
 import { columnAdapter } from "./adapter.js";
-import { clearTimers, deliver, flush, invalidate } from "./entry.js";
+import { clearTimers, deliver, flush, holdBehind, invalidate } from "./entry.js";
 import { FlushRefused } from "./errors.js";
 import { entryRef, load } from "./materialise.js";
 import { replicaId } from "./replica.js";
@@ -33,6 +34,17 @@ export interface OpenDoc<D> extends AsyncDisposable {
   readonly flush: () => Promise<Result<SyncEvent | undefined, FlushError>>;
   /** Flushes, then lets go of this handle; the document closes with its last handle. */
   readonly close: () => Promise<Result<SyncEvent | undefined, FlushError>>;
+}
+
+/**
+ * One row's document column as a stable descriptor (RFC-0023 §4.2): what opens it, and what
+ * `useDoc` takes. The runtime hands back the same ref for the same address, so a component can
+ * depend on one without reopening the document every render.
+ */
+export interface DocRef<D> {
+  readonly address: DocAddress;
+  /** Opens the document; two opens share one replica, and the last close lets it go. */
+  readonly open: () => Promise<Result<OpenDoc<D>, OpenError>>;
 }
 
 /** How local edits are paced into events (RFC-0023 §5.4): after `idle` of quiet, at most every `max`. */
@@ -59,12 +71,52 @@ export interface OpenDeps {
   readonly onError?: (error: FlushError) => void;
   /** A flush at `address` wrote nothing, so the derived values it computed never landed. */
   readonly onFlushFailed?: (address: DocAddress) => void;
+  /** Where blob-carried updates are put and fetched; absent, a burst past the inline bound is refused. */
+  readonly blobs?: DocBlobs;
+}
+
+/** Flushes every open replica that was not invalidated; a failed flush goes to `onError`. */
+async function flushEvery(
+  open: ReadonlyMap<string, Entry>,
+  addresses: ReadonlyMap<string, DocAddress>,
+  flushEntry: (address: DocAddress, entry: Entry) => Promise<Result<unknown, FlushError>>,
+  onError: ((error: FlushError) => void) | undefined,
+) {
+  const flushed = await Promise.all(
+    [...open].map(([key, entry]) => {
+      const address = addresses.get(key);
+      return entry.status === "invalidated" || address === undefined
+        ? Promise.resolve(Result.ok(undefined))
+        : flushEntry(address, entry);
+    }),
+  );
+  for (const result of flushed) if (result.isErr()) onError?.(result.error);
+}
+
+/**
+ * One {@link DocRef} per address, each opening through `open`: the same object for the same
+ * address, so a component holding one keeps it across renders.
+ */
+export function createRefs(
+  open: (address: DocAddress) => Promise<Result<OpenDoc<unknown>, OpenError>>,
+) {
+  const refs = new Map<string, DocRef<unknown>>();
+  return <D>(address: DocAddress): DocRef<D> => {
+    const key = docKey(address);
+    const ref = refs.get(key) ?? { address, open: () => open(address) };
+    refs.set(key, ref);
+    // SAFETY: a ref's document is its column adapter's, whichever D the caller names for it
+    const typed = ref as DocRef<D>;
+    return typed;
+  };
 }
 
 /** The handle registry one runtime keeps: one replica per document, however many handles. */
 export function createHandles(deps: OpenDeps) {
   const { engine, adapters } = deps;
   const open = new Map<string, Entry>();
+  /** Where each open replica's document lives, by the same key. */
+  const addresses = new Map<string, DocAddress>();
   /** Opens still reading their tail: a second open waits for the first, never loads a second replica. */
   const loading = new Map<string, Promise<Result<Entry, OpenError>>>();
   const arrivals = new Map<string, DocAppend[]>(); // what folded while those reads ran
@@ -73,7 +125,14 @@ export function createHandles(deps: OpenDeps) {
   const ms = (d: Temporal.Duration) => d.total({ unit: "milliseconds" });
 
   const flushEntry = async (address: DocAddress, entry: Entry) => {
-    const flushed = await flush(engine, deps.procedure, address, entry, deps.derive(address));
+    const flushed = await flush(
+      engine,
+      deps.procedure,
+      address,
+      entry,
+      deps.derive(address),
+      deps.blobs,
+    );
     if (flushed.isErr()) deps.onFlushFailed?.(address);
     return flushed;
   };
@@ -106,7 +165,7 @@ export function createHandles(deps: OpenDeps) {
       const held = open.get(key);
       // folded after the opening read of the tail: delivered once the replica exists
       if (held === undefined) arrivals.get(key)?.push(...appends);
-      else deliver(engine, held, appends);
+      else deliver(engine, held, appends, deps.blobs);
     }
   };
 
@@ -172,7 +231,7 @@ export function createHandles(deps: OpenDeps) {
     const entry = await loaded;
     loading.delete(key);
     if (entry.isOk() && purgedWhileLoading.has(key)) invalidate(entry.value);
-    else if (entry.isOk()) deliver(engine, entry.value, arrivals.get(key) ?? []);
+    else if (entry.isOk()) deliver(engine, entry.value, arrivals.get(key) ?? [], deps.blobs);
     purgedWhileLoading.delete(key);
     arrivals.delete(key);
     return entry.map((e) => handle<D>(address, e));
@@ -203,13 +262,21 @@ export function createHandles(deps: OpenDeps) {
       };
       const unwatch = adapter.watchLocal(loaded.doc, () => schedule(address, entry));
       Object.assign(entry, { stop: unwatch });
+      holdBehind(entry, loaded.missing.length);
       open.set(docKey(address), entry);
+      addresses.set(docKey(address), address);
       return Result.ok(entry);
     });
 
   const unfold = engine.onFoldBatch(applyFolded);
   return {
     open: openDoc,
+    /**
+     * Flushes every open replica now, rather than when the pacing says: what a host does before
+     * it stops, so a burst still waiting on its idle timer is not lost with the process. A failed
+     * flush goes to `onError`, as a paced one does.
+     */
+    flushAll: () => flushEvery(open, addresses, flushEntry, deps.onError),
     /** The replica open at `address`, unless none is or it was invalidated. */
     held: (address: DocAddress): Entry | undefined => {
       const entry = open.get(docKey(address));

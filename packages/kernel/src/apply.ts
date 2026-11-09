@@ -1,10 +1,11 @@
 import type { FoldableChange, Row, RowKey, TableName } from "./change.js";
+import type { DocChange } from "./doc.js";
 import type { PartitionKey } from "./partition.js";
 import type { Cell, ColumnName, RowRecord } from "./record.js";
 import type { State, TableState } from "./state.js";
 import type { MergeSpec } from "./strategy.js";
 
-import { cellRules, lineageCell, type CellRule, type DocChange } from "./doc.js";
+import { cellRules, lineageCell, type CellRule } from "./lineage.js";
 import { withEntry } from "./persistent-map.js";
 import { compareStamp, type Stamp } from "./stamp.js";
 
@@ -51,7 +52,7 @@ export function applyChange(
 
 /**
  * A genesis adds itself — its lineage, the lineage it replaced, its stamp — to the column's cell,
- * and nothing else: no `writeStamp`, because a
+ * with the anchor it settles the walk at when it carries one (gaps U21), and nothing else: no `writeStamp`, because a
  * document edit is not a row write and must not resurrect a deleted row or outlive a later delete.
  * The column is joined by the lineage rule whatever `merge` says, since the change itself is what
  * names the column as a document.
@@ -66,7 +67,7 @@ function applyGenesis(
   if (change.genesis !== true || change.legacy === true || change.lineage === undefined)
     return state;
   const genesis = { lineage: change.lineage, parent: change.parent, stamp };
-  const cells = new Map([[change.column, lineageCell(genesis)]]);
+  const cells = new Map([[change.column, lineageCell(genesis, change.settles)]]);
   const rules = new Map<ColumnName, CellRule>(merge?.get(change.table) ?? []);
   rules.set(change.column, "lineage");
   const spec = new Map(merge ?? []).set(change.table, rules);

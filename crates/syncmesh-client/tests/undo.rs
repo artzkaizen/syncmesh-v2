@@ -215,6 +215,7 @@ fn a_write_of_document_updates_alone_is_refused_and_stays_revertable() {
         genesis: false,
         legacy: false,
         parent: None,
+        settles: None,
     });
     let edited = write(&mut a, doc.clone());
     for _ in 0..2 {
@@ -489,6 +490,7 @@ fn a_delete_of_a_replaced_documents_row_comes_back_with_its_lineage() {
             genesis: true,
             legacy: false,
             parent: None,
+            settles: None,
         }),
     );
     let lineage = lineage_of(a.state().record("notes", "n1"), "content");

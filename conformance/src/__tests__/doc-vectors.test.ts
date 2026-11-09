@@ -1,6 +1,7 @@
 import {
   getRecord,
   docLineage,
+  hlcOf,
   parseLineageCells,
   parseLineageId,
   parsePeerId,
@@ -77,6 +78,16 @@ describe("doc vectors — frozen (RFC-0023 §13)", () => {
         ms: g.ms,
         logical: g.logical,
         peer: parsePeerId(g.peer).unwrap(),
+        settles:
+          g.settles === null
+            ? undefined
+            : {
+                lineage: parseLineageId(g.settles.lineage).unwrap(),
+                stamp: {
+                  hlc: hlcOf(g.settles.ms, g.settles.logical),
+                  peer: parsePeerId(g.settles.peer).unwrap(),
+                },
+              },
       }));
       const winner = lineageOrRoot(tree.winner);
       for (const order of permutations(geneses)) {

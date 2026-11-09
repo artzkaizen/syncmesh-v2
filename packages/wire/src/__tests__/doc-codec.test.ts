@@ -1,5 +1,7 @@
 import {
   GENESIS_RULE,
+  SETTLED_RULE,
+  hlcOf,
   parseActionId,
   parseAdapterId,
   parseLineageId,
@@ -24,6 +26,8 @@ const LORO = parseAdapterId("loro@1").unwrap();
 const LINEAGE = parseLineageId("0f".repeat(16)).unwrap();
 const ACTION = parseActionId("a1".repeat(16)).unwrap();
 const UNDONE = parseActionId("b2".repeat(16)).unwrap();
+const PEER_KEY = new Uint8Array(32).fill(0xab);
+const ANCHOR: CborValue = [new Uint8Array(16), 1, 0, PEER_KEY];
 
 const doc = (extra: Partial<DocChange> = {}): DocChange => ({
   kind: "doc",
@@ -99,6 +103,25 @@ describe("a doc change on the wire (tag 6)", () => {
     expect(rootData.has(DOC.parent)).toBe(false);
   });
 
+  test("a genesis that settles the walk is rule 2 in key 5, with its anchor in key 7 (gaps U21)", () => {
+    const settles = { lineage: LINEAGE, stamp: { hlc: hlcOf(7, 3), peer: IDENTITY_B.peerId } };
+    const change = doc({
+      lineage: parseLineageId("2d".repeat(16)).unwrap(),
+      genesis: true,
+      parent: LINEAGE,
+      settles,
+    });
+    const decoded = roundTrip(event([change]));
+    expect(decoded.changes).toEqual([change]);
+    const data = asMap(
+      asMap(asArray(asMap(decodeCbor(encodeEventCore(event([change]))).unwrap()).get(7))[0]).get(3),
+    );
+    expect(data.get(DOC.genesis)).toBe(SETTLED_RULE);
+    const [lineage, ms, logical, peer] = asArray(data.get(DOC.settles));
+    expect([id16(lineage), ms, logical]).toEqual([LINEAGE, 7, 3]);
+    expect(peer instanceof Uint8Array && bytesToHex(peer)).toBe(IDENTITY_B.peerId);
+  });
+
   test("a genesis written under last-writer-wins (`true`) decodes as legacy and re-encodes byte for byte", () => {
     const legacy = withData((d) => d.set(DOC.lineage, new Uint8Array(16)).set(DOC.genesis, true));
     const decoded = decodeEventCore(legacy).unwrap();
@@ -127,7 +150,22 @@ describe("a doc change on the wire (tag 6)", () => {
     ],
     ["a lineage that is not 16 bytes", (d) => d.set(DOC.lineage, new Uint8Array(15))],
     ["a genesis that is not the rule's version", (d) => d.set(DOC.genesis, false)],
-    ["a genesis of a rule this build does not know", (d) => d.set(DOC.genesis, 2)],
+    ["a genesis of a rule this build does not know", (d) => d.set(DOC.genesis, 3)],
+    ["a genesis of rule 2 that settles nothing", (d) => d.set(DOC.genesis, SETTLED_RULE)],
+    ["an anchor on a genesis of rule 1", (d) => d.set(DOC.genesis, 1).set(DOC.settles, ANCHOR)],
+    ["an anchor on an edit that is not a genesis", (d) => d.set(DOC.settles, ANCHOR)],
+    [
+      "an anchor whose lineage is not 16 bytes",
+      (d) => d.set(DOC.genesis, 2).set(DOC.settles, [new Uint8Array(15), 1, 0, PEER_KEY]),
+    ],
+    [
+      "an anchor whose stamp is not an HLC",
+      (d) => d.set(DOC.genesis, 2).set(DOC.settles, [new Uint8Array(16), -1, 0, PEER_KEY]),
+    ],
+    [
+      "an anchor whose peer is not 32 bytes",
+      (d) => d.set(DOC.genesis, 2).set(DOC.settles, [new Uint8Array(16), 1, 0, new Uint8Array(31)]),
+    ],
     [
       "a parent that is not 16 bytes",
       (d) => d.set(DOC.genesis, 1).set(DOC.parent, new Uint8Array(15)),
