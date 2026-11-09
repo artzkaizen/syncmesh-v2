@@ -108,6 +108,38 @@ describe("the author's ledger over a relay (D32, U17)", () => {
   });
 });
 
+describe("the relay room as a holder (D28, U38)", () => {
+  test("a room that signs custody empties the author's sole-custody list for what it keeps", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-relay-holder-"));
+    const relayKey = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 200 + i)).unwrap();
+    const relay = await startRelay(0, {
+      dataDir,
+      keepaliveMs: 60_000,
+      identity: relayKey,
+      custody: { every: Temporal.Duration.from({ milliseconds: 50 }) },
+    });
+    try {
+      const a = await open(relay.url, deviceA, T0);
+      a.grants.register(grantFor(deviceA, "acct_a", T0)).unwrap();
+      await a.ready();
+      await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n1", body: "hello" });
+      const ledger = a.operations ?? panicNoLedger();
+      // no other device in the room: until the room signs, this device is the only holder
+      expect(await until(async () => (await ledger.soleCustody()).unwrap().length === 0)).toBe(
+        true,
+      );
+      // SAFETY: this device's first write, so its event is sequence 1 — a branded integer
+      const first = 1 as SeqNum;
+      const vouched = (await ledger.vouchesOf(deviceA.peerId, first)).unwrap();
+      expect(vouched.map((v) => v.holder)).toEqual([relay.peerId]);
+      await a.stop();
+    } finally {
+      await relay.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
 const panicNoLedger = () => {
   throw new Error("a mesh over SQLite keeps a write ledger");
 };

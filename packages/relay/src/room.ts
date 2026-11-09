@@ -21,6 +21,7 @@ import type { Fanout, FanoutLink } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayRetention } from "./retention.js";
+import type { RoomCustodyOptions } from "./room-receipts.js";
 import type { RelaySocket } from "./sender.js";
 import type { Client, Fanned, RoomState } from "./state.js";
 import type { RoomTrust } from "./trust.js";
@@ -32,6 +33,7 @@ import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } 
 import { createGrantCache } from "./grant-cache.js";
 import { DEFAULT_LIMITS, createBudget } from "./limits.js";
 import { roomRetention } from "./retention.js";
+import { assertTruthfulCustody, createRoomReceipts } from "./room-receipts.js";
 
 export type { ConnectionOptions, RelayConnection } from "./connection.js";
 
@@ -66,6 +68,25 @@ export interface RelayRoomOptions {
    * durable store keeps one beside the epoch for exactly that reason.
    */
   readonly identity?: Identity;
+  /**
+   * Signs this room's own custody (D28, U38): what the log holds of each author's writes, as a
+   * `CustodyReceipt` under `identity` with `epoch` as the incarnation, sent to that author's
+   * socket when it sits down and within `every` of its writes landing. The author's ledger then
+   * counts the room as a holder, so `soleCustody()` stops listing what the room keeps and a
+   * device can detach a partition the room holds for it.
+   *
+   * A receipt licenses a deletion on the author's device, so the room signs only what is true for
+   * as long as the key names it, and throws at open on a definition that could not be:
+   * - `identity` must be given, and must outlive the log. A key minted per process, or kept in the
+   *   same file as the log, comes back as a different holder after the log is lost, and what the
+   *   old key signed is never withdrawn — the epoch can only retire what its own key signed.
+   * - `durable` must be true: a log in memory is gone on restart, and its receipts with it.
+   * - `retention.keepEventsFor` must be absent: a receipt says "everything through N", and a room
+   *   that trims holds only the end of that.
+   *
+   * Absent, the room signs nothing, as every room did before.
+   */
+  readonly custody?: RoomCustodyOptions;
   /**
    * Per-socket ceilings; each half defaults from `DEFAULT_LIMITS`. `rates` is all-or-nothing —
    * a partly-overridden rate table is a table where the class nobody thought about is the one
@@ -182,6 +203,7 @@ export async function openRelayRoom(
   const now = options.now ?? (() => Temporal.Now.instant());
   const versions = roomVersions(options.versions);
   const identity = roomIdentity(options.identity);
+  assertTruthfulCustody(options.custody, options, `relay room ${name}`);
   const boot = await store.all();
   if (boot.isErr()) return boot;
   // read before the log is walked, because it is what the walk starts from: a log already trimmed
@@ -267,6 +289,10 @@ export async function openRelayRoom(
     now,
   );
   const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);
+  const receipts =
+    options.custody === undefined
+      ? undefined
+      : createRoomReceipts({ clients, cursors, identity, epoch, now }, options.custody);
 
   const state: RoomState = {
     store,
@@ -277,6 +303,7 @@ export async function openRelayRoom(
     maxBacklog,
     versions,
     identity,
+    receipts,
     limits,
     budget,
     blobs: retention.blobs,
@@ -296,7 +323,9 @@ export async function openRelayRoom(
     appended: (entry) => {
       offset += 1;
       retention.keeper?.note(entry.event);
-      if (servable(entry)) coverage.note(entry.event);
+      if (!servable(entry)) return;
+      coverage.note(entry.event);
+      receipts?.appended(entry.event.peerId);
     },
     enqueue: (work) => void (queue = queue.then(work)),
     now,
@@ -329,6 +358,7 @@ export async function openRelayRoom(
     },
     close: () => {
       clearInterval(keepalive);
+      receipts?.close();
       retention.stop();
       offFan?.();
       fan?.close();

@@ -5,6 +5,7 @@ import type { RoomState } from "./state.js";
 
 import { routeCustody } from "./custody-route.js";
 import { decodeRelayFrame } from "./frame-decode.js";
+import { seatedSlot } from "./frames.js";
 import { absorbEvent } from "./ingest.js";
 import { admitGrant } from "./trust.js";
 
@@ -44,6 +45,11 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
     // a receipt or a refusal is for its author alone, here as from a socket (D32)
     if (value.kind === "refusal") {
       routeCustody(room, frame, value, "fleet");
+      return;
+    }
+    // a joiner sat down on another instance: the holders here say again what of theirs they refused
+    if (value.kind === "seated") {
+      room.toClientsLatest(seatedSlot(value.peer), frame, value.peer);
       return;
     }
     if (value.kind !== "session") return; // a control frame belongs to one socket, not to a room

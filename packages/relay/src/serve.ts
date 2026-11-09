@@ -11,6 +11,7 @@ import type { RelayHost, RoomStore, RelayHostOptions, SocketSession } from "./ho
 import type { RelayLimits } from "./limits.js";
 import type { RelayPosture } from "./posture.js";
 import type { RelayRetention } from "./retention.js";
+import type { RoomCustodyOptions } from "./room-receipts.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
 import { describeRoom, requestRoom } from "./describe.js";
@@ -40,6 +41,13 @@ export interface StartRelayOptions {
   readonly limits?: Partial<RelayLimits>;
   /** What every room here stops keeping: log age and blob bytes. Absent, nothing is ever dropped. */
   readonly retention?: RelayRetention;
+  /**
+   * Every durable room here signs its own custody under `identity`, its epoch the incarnation
+   * (D28, U38), so a device counts the relay as a holder of what it keeps. Needs `identity`, and
+   * no `retention.keepEventsFor`; a `store` of your own must also be `durable`. Absent, no room
+   * signs.
+   */
+  readonly custody?: RoomCustodyOptions;
   /**
    * How long a room with no socket on it is kept open before it is closed and its log handle
    * released. Absent, `DEFAULT_IDLE_AFTER` over `dataDir`, and never with your own `store`. Its
@@ -109,6 +117,7 @@ export const hostTuning = (
     identity: options.identity,
     limits: options.limits,
     retention: options.retention,
+    custody: options.custody,
     // a room over its own file is a handle worth giving back; a caller's store lends none
     idleAfter: options.idleAfter ?? (options.store === undefined ? DEFAULT_IDLE_AFTER : undefined),
     posture: options.posture,
