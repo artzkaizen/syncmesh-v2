@@ -13,6 +13,12 @@ export interface RelayDial {
   readonly onFrame: (cb: (frame: Uint8Array) => void) => Unsubscribe;
   readonly onClose: (cb: () => void) => Unsubscribe;
   readonly close: () => void;
+  /**
+   * Bytes `send` took that have not left yet — `WebSocket.bufferedAmount`. While it is above zero
+   * this device's presence is held per slot rather than queued behind them (D16). Absent, the
+   * socket is taken to hold nothing and every value is sent at once.
+   */
+  readonly buffered?: () => number;
 }
 
 export interface RelayTransportOptions {
@@ -65,7 +71,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
     condition: link.report.condition,
     onLinkEvent: link.report.onLinkEvent,
     priority: options.priority ?? 1,
-    sendPresence: (wire) => link.sendPresence(wire),
+    sendPresence: link.presence.offer,
     blobs: link.blobChannel.capability,
     visibility: link.visibility.capability,
     durable: link.durability.durable,

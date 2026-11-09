@@ -81,6 +81,8 @@ export { tablesProjection } from "./projection.js";
 export type { BlobError, BlobHash, BlobStore } from "./blob.js";
 export type { BlobHome, BlobHomes } from "./blob-homes.js";
 export { memoryBlobHomes, sqlBlobHomes } from "./blob-homes.js";
+export type { BlobLedger, BlobLedgerState, BlobRow, BlobWindow } from "./blob-ledger.js";
+export { joinBlobRows, laterStamp, memoryBlobLedger, sqlBlobLedger } from "./blob-ledger.js";
 export {
   BlobCorrupt,
   BlobNotFound,

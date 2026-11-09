@@ -9,10 +9,17 @@
 //! this one records the deadline and lets the host ask `expired` on its tick.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use syncmesh_core::event::PartitionKey;
 use syncmesh_core::relay_frames::{RelayFrame, blob_get_frame, blob_put_frame};
 use syncmesh_core::to_hex;
+
+/// How long a put waits for the relay to say it kept the bytes — `BLOB_ANSWER_WAIT` in the
+/// TypeScript. A relay built before `blob-stored` never says, so running out is not a refusal:
+/// silence is what that relay has always answered with.
+pub const BLOB_ANSWER_WAIT: Duration = Duration::from_secs(10);
 
 /// The sha-256 of the bytes, in the wire's lowercase hex — the blob's whole identity.
 pub fn hash_of(bytes: &[u8]) -> String {
@@ -37,6 +44,19 @@ pub enum BlobError {
     Timeout {
         hash: String,
     },
+    /// A relay refused the put: the partition's byte budget would pass its quota. Nothing was
+    /// stored there, and this device is still the only holder.
+    QuotaExceeded {
+        hash: String,
+        partition: Option<PartitionKey>,
+        limit: u64,
+        used: u64,
+    },
+    /// A grant-gated relay refused the put: this device's grant does not name the partition (D44).
+    NotGranted {
+        hash: String,
+        partition: PartitionKey,
+    },
     Store(String),
 }
 
@@ -53,6 +73,25 @@ impl std::fmt::Display for BlobError {
                     "blob {hash}: nobody reachable answered with these bytes in time"
                 )
             }
+            BlobError::QuotaExceeded {
+                hash,
+                partition,
+                limit,
+                used,
+            } => {
+                let budget = partition
+                    .as_ref()
+                    .map_or("the unnamed budget", PartitionKey::as_str);
+                write!(
+                    f,
+                    "blob {hash}: a relay refused these bytes: {budget} holds {used} of {limit} bytes"
+                )
+            }
+            BlobError::NotGranted { hash, partition } => write!(
+                f,
+                "blob {hash}: a grant-gated relay refused these bytes: this device's grant does not name {}",
+                partition.as_str()
+            ),
             BlobError::Store(message) => write!(f, "blob store: {message}"),
         }
     }
@@ -140,6 +179,81 @@ impl BlobStore for MemoryBlobStore {
     }
 }
 
+/// Why a relay would not keep a put, as the putter reads it — or `None` from [`put_refusal`] for
+/// a `blob-stored`, and for a refusal whose code is not about this put's budget or grant
+/// (`no-store` from a room that keeps no blobs, or a code this build cannot name, D14): either
+/// way that is what the putter heard before the answer existed, and it stays the holder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PutRefusal {
+    Quota {
+        partition: Option<PartitionKey>,
+        limit: u64,
+        used: u64,
+    },
+    Ungranted {
+        partition: PartitionKey,
+    },
+}
+
+impl PutRefusal {
+    /// The partition the refusal names: a refusal answers only the puts billed to it.
+    pub fn partition(&self) -> Option<&PartitionKey> {
+        match self {
+            PutRefusal::Quota { partition, .. } => partition.as_ref(),
+            PutRefusal::Ungranted { partition } => Some(partition),
+        }
+    }
+
+    /// The error a put of `hash` answers with.
+    pub fn into_error(self, hash: &str) -> BlobError {
+        let hash = hash.to_owned();
+        match self {
+            PutRefusal::Quota {
+                partition,
+                limit,
+                used,
+            } => BlobError::QuotaExceeded {
+                hash,
+                partition,
+                limit,
+                used,
+            },
+            PutRefusal::Ungranted { partition } => BlobError::NotGranted { hash, partition },
+        }
+    }
+}
+
+/// A put's answer from the relay frame: the hash it is for and what it means, or `None` for a
+/// frame that is not a put's answer. The TypeScript's `uploadRefusal`.
+pub fn put_answer(frame: &RelayFrame) -> Option<(String, Option<PutRefusal>)> {
+    match frame {
+        RelayFrame::BlobStored { hash } => Some((hash.clone(), None)),
+        RelayFrame::BlobRefused {
+            hash,
+            code,
+            limit,
+            used,
+            partition,
+        } => {
+            let refusal = match (code.as_str(), partition) {
+                ("quota", _) => Some(PutRefusal::Quota {
+                    partition: partition.clone(),
+                    limit: *limit,
+                    used: *used,
+                }),
+                // a refusal naming no partition cannot be about a grant: a put billed to none is
+                // never refused for one
+                ("ungranted", Some(partition)) => Some(PutRefusal::Ungranted {
+                    partition: partition.clone(),
+                }),
+                _ => None,
+            };
+            Some((hash.clone(), refusal))
+        }
+        _ => None,
+    }
+}
+
 /// What a download settled to: the verified bytes, or `None` when the relay said `blob-missing`
 /// or served bytes that were not the ones the hash names. Both `None`s mean the same thing to the
 /// asker — try another source — and the corrupt case is not surfaced separately because a
@@ -165,10 +279,11 @@ impl BlobChannel {
         BlobChannel::default()
     }
 
-    /// The `blob-put` frame to send. The relay verifies before it stores; an upload that cannot
-    /// leave is the caller's to retry, so nothing is remembered here.
-    pub fn upload(&self, hash: &str, bytes: &[u8]) -> Vec<u8> {
-        blob_put_frame(hash, bytes, None)
+    /// The `blob-put` frame to send, billed to `partition`. The relay verifies before it stores
+    /// and answers `blob-stored` or `blob-refused` ([`put_answer`]); an upload that cannot leave
+    /// is the caller's to retry, so nothing is remembered here.
+    pub fn upload(&self, hash: &str, bytes: &[u8], partition: Option<&PartitionKey>) -> Vec<u8> {
+        blob_put_frame(hash, bytes, partition)
     }
 
     /// Records the wait and returns the `blob-get` frame to send. Asking again for a hash already
@@ -291,7 +406,7 @@ mod tests {
     fn channel_frames_decode_to_blob_put_and_blob_get() {
         let mut channel = BlobChannel::new();
         let hash = hash_of(b"photo");
-        match decode_relay_frame(&channel.upload(&hash, b"photo")).unwrap() {
+        match decode_relay_frame(&channel.upload(&hash, b"photo", None)).unwrap() {
             RelayFrame::BlobPut { hash: h, bytes, .. } => {
                 assert_eq!(h, hash);
                 assert_eq!(bytes, b"photo");
@@ -376,5 +491,56 @@ mod tests {
         assert_eq!(channel.next_deadline_ms(), Some(7_000));
         assert_eq!(channel.expired(7_000), vec![b]);
         assert_eq!(channel.next_deadline_ms(), None);
+    }
+
+    #[test]
+    fn a_put_answer_reads_as_the_typescript_reads_it() {
+        let acme = PartitionKey::parse("org:acme").unwrap();
+        let refused = |code: &str, partition: Option<PartitionKey>| RelayFrame::BlobRefused {
+            hash: "h".to_owned(),
+            code: code.to_owned(),
+            limit: 40,
+            used: 30,
+            partition,
+        };
+        assert_eq!(
+            put_answer(&RelayFrame::BlobStored {
+                hash: "h".to_owned()
+            }),
+            Some(("h".to_owned(), None))
+        );
+        let quota = put_answer(&refused("quota", Some(acme.clone())))
+            .unwrap()
+            .1
+            .unwrap();
+        assert_eq!(
+            quota.clone().into_error("h"),
+            BlobError::QuotaExceeded {
+                hash: "h".to_owned(),
+                partition: Some(acme.clone()),
+                limit: 40,
+                used: 30
+            }
+        );
+        assert!(
+            quota
+                .into_error("h")
+                .to_string()
+                .contains("org:acme holds 30 of 40")
+        );
+        assert_eq!(
+            put_answer(&refused("ungranted", Some(acme.clone())))
+                .unwrap()
+                .1,
+            Some(PutRefusal::Ungranted { partition: acme })
+        );
+        // not this put's budget or grant: the putter stays the holder and the put succeeds
+        for code in ["no-store", "ungranted", "a-code-from-later"] {
+            assert_eq!(
+                put_answer(&refused(code, None)),
+                Some(("h".to_owned(), None))
+            );
+        }
+        assert_eq!(put_answer(&RelayFrame::Ka), None);
     }
 }

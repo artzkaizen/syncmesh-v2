@@ -48,7 +48,8 @@ pub mod mesh;
 pub use syncmesh_core as core;
 
 pub use blobs::{
-    BlobAnswer, BlobChannel, BlobError, BlobStore, MemoryBlobStore, hash_of, verify_blob,
+    BLOB_ANSWER_WAIT, BlobAnswer, BlobChannel, BlobError, BlobStore, MemoryBlobStore, PutRefusal,
+    hash_of, put_answer, verify_blob,
 };
 pub use coverage::CoverageTracker;
 pub use doc_log::{

@@ -27,7 +27,9 @@ export interface DurableWebSocket {
  * Never `buffered`: workerd owns the outgoing queue and closes a socket whose client cannot keep
  * up, which is D09's rule enforced one layer down — so there is no drain event to flush against
  * and the room's own backlog never fills. `dropped` is reserved for a socket that has already
- * gone, where the queued frames die with the connection at `leave`.
+ * gone, where the queued frames die with the connection at `leave`. With no `buffered`, the
+ * room's presence hold (`Sender.sendLatest`, gaps U19) never engages here: a stalled client's
+ * presence queues in workerd's socket until workerd closes it.
  */
 export function durableRelaySocket(ws: DurableWebSocket): RelaySocket {
   return {

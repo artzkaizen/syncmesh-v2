@@ -114,7 +114,11 @@ version negotiation). What remains:
     on a slow radio became a 150-frame backlog with events stuck behind it. Fixed by
     `FrameLink.sendLatest` (newest frame per presence slot, ordinary frames first), passed through
     the sealed, held and multiplexed links. A stalled relay WebSocket still buffers presence in
-    the socket; nothing there conflates yet.
+    the socket; nothing there conflates yet. **2026-11-08:** it does now (gaps U19): the
+    relay's sender holds the newest value per slot while a socket is behind, and the device
+    holds its own while its socket's `bufferedAmount` is above zero. The relay's half needs a
+    socket that reports backpressure (the Bun and Node hosts); the Durable Object and Rivet
+    sockets do not, and there the platform's own slow-client close is the bound.
 22. E15: blob compaction sweep + per-partition quotas — deliberately unsized until a
     real workload; rounds-web may now be that workload.
     **2026-11-07: built, opt-in and unsized.** `relay/src/blob-keeper.ts`: the sweep runs
@@ -124,6 +128,9 @@ version negotiation). What remains:
     Limit kept open: "referenced" means any event this instance has seen, kept through
     log trims (a trimmed insert is still a live row), so a delete frees nothing and only
     uploads no row ever named are swept; sealed rooms never sweep.
+    **2026-11-08 (gaps U18):** references now follow rows — a delete frees its blob a window
+    later, the references outlive trims in a ledger, a sealed event keeps only its partition's
+    blobs, an earlier run's blobs are billed and swept, and each pass reports `relay.blob.sweep`.
     The numbers are still nobody's until a workload sets them.
 23. E24/E09 contradict each other on `mesh.transports.add/remove` (E24 wants it,
     E09 deliberately marks it absent). Reconcile.

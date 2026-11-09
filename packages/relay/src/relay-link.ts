@@ -5,7 +5,7 @@ import type { TransportContext } from "@syncmesh/transport";
 import { createHub, interestText } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
-import { grantFrame, grantRequestFrame, presenceFrame } from "@syncmesh/transport";
+import { grantFrame, grantRequestFrame } from "@syncmesh/transport";
 
 import type { LinkReport } from "./link-report.js";
 import type { Redial } from "./redial.js";
@@ -22,6 +22,7 @@ import * as said from "./link-reasons.js";
 import { createLinkReport } from "./link-report.js";
 import { createLinkSeal, openedDial, type LinkSeal } from "./link-seal.js";
 import { createLiveness } from "./liveness.js";
+import { createPresenceHold } from "./presence-hold.js";
 import { proveJoin } from "./proof.js";
 import { createRedial } from "./redial.js";
 import { refusalsOver } from "./refused.js";
@@ -41,6 +42,8 @@ export class RelayLink {
   readonly name: string;
   readonly status = createHub<boolean>();
   readonly blobChannel = createBlobChannel((frame) => this.sendSafe(frame));
+  /** This device's presence, held per slot while the socket's own buffer is behind (D16). */
+  readonly presence = createPresenceHold(this.sendSafe.bind(this), () => this.live);
   // the mesh's clock where there is one, so a link event and the fold beside it agree — the same
   // rule `createFrameTransport` follows, and the reason `ctx` is read per call rather than captured
   readonly report: LinkReport;
@@ -304,10 +307,6 @@ export class RelayLink {
     this.redial.settled();
     if (this.live === undefined) this.redial.attempt();
     else this.hangUp("the network changed, so this link is being re-established");
-  }
-
-  sendPresence(wire: Uint8Array): void {
-    this.sendSafe(presenceFrame(wire));
   }
 
   requestGrant(invite?: string): void {

@@ -748,6 +748,14 @@ fn presence_grants_and_blobs_pass_through_the_room() {
     net.apply_device(a, actions);
     net.pump();
     assert_eq!(net.room.blob(&hash), Some(bytes.as_slice()));
+    // the room said it kept them, and the link reads that rather than dropping it
+    assert_eq!(
+        net.take_facts(a),
+        vec![Action::BlobPutAnswer {
+            hash: hash.clone(),
+            refusal: None
+        }]
+    );
     let actions = net.devices[b].link.send_raw_frame(blob_get_frame(&hash));
     net.apply_device(b, actions);
     net.pump();
@@ -1333,4 +1341,15 @@ fn a_grant_is_registered_before_the_events_that_arrive_beside_it_fold() {
         "{facts:?}"
     );
     assert!(facts.contains(&Action::Grant(foreign)));
+}
+
+#[test]
+fn a_blob_put_with_no_live_link_is_said_unsent_at_once() {
+    let mut link = RelayLink::new(identity(1), RelayOptions::default());
+    let bytes = b"the bytes of a blob".to_vec();
+    let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+    assert_eq!(
+        link.send_blob_put(hash.clone(), blob_put_frame(&hash, &bytes, None)),
+        vec![Action::BlobPutUnsent { hash }]
+    );
 }
