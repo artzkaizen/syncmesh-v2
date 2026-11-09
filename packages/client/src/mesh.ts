@@ -29,7 +29,7 @@ import { historyView } from "./history-view.js";
 import { createHandleTally, createInspect, meterHandles } from "./inspect.js";
 import { openInternal } from "./internal.js";
 import { joinIfEmpty } from "./join.js";
-import { narrowingFor, type watchNarrowing } from "./narrowing.js";
+import { createNarrowing, type watchNarrowing } from "./narrowing.js";
 import { wireOperations } from "./operations.js";
 import { createPeers } from "./peers.js";
 import { openPresence } from "./presence.js";
@@ -87,10 +87,11 @@ export async function createMesh<
   // plain await, not Result.gen: a definition-time panic in `assemble` must reach the caller as itself
   const booted = await openMeshEngine(bootSettings(options, { now, grantFor: grants.grantFor }));
   if (booted.isErr()) return booted;
-  bind(booted.value.engine);
+  // a grant registering from here on re-offers what its device wrote ahead of it (gaps U42)
+  const regranted = bind(booted.value.engine);
   // before the grants are restored, so the restored own grant is the baseline a narrowing is
   // measured from, never a narrowing itself
-  const { blobStore, narrowing } = narrowingFor(
+  const { blobStore, narrowing } = createNarrowing(
     booted.value.engine,
     registry,
     omitUndefined({ identity, blobStore: storage?.blobs, onNarrowed: options.onNarrowed }),
@@ -103,7 +104,7 @@ export async function createMesh<
   // the grant writes queue behind purges (D45): closing the database under them would lose a
   // revocation or a renewal the app already made, so the close waits for both
   const close = async (): Promise<void> => {
-    await narrowing.close();
+    await Promise.all([regranted.close(), narrowing.close()]);
     await booted.value.close();
   };
   const held = { ...booted.value, close };

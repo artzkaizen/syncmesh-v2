@@ -46,7 +46,7 @@ import { createFoldPath, type FoldBatch } from "./fold.js";
 import { gatedTransactions } from "./gate.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
 import { type PurgeApi, createPurge } from "./purge.js";
-import { createQuarantine, retryQuarantined, withRetry } from "./quarantine.js";
+import { createQuarantine, createRetries, withRetry } from "./quarantine.js";
 import { recentHeaders } from "./recent.js";
 import { createRevert } from "./revert.js";
 import { createSnapshotPath } from "./snapshot.js";
@@ -175,6 +175,13 @@ export interface Engine
    * not is parked again.
    */
   readonly retryQuarantined: () => Promise<Result<ReceiveReport, StoreFailure>>;
+  /**
+   * Re-offers the events of one author that its grant refused — `NoGrant`, `GrantStale`, and the
+   * rest of the capability verdicts — and leaves everything else parked. What a grant registering
+   * for that author is followed by: an event can arrive before the grant that vouches for it, and
+   * nothing else would offer it again in a room where no later batch folds (gaps U42).
+   */
+  readonly retryAuthor: (author: PeerId) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly onQuarantine: (listener: (q: Quarantined) => void) => Unsubscribe;
   /**
    * Every author this device holds writes for that it can never send — empty on a device that
@@ -257,7 +264,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   // what the snapshot install and the purge both read and replace, and revert reads; the clock
   // a snapshot install tells of every stamp it brings
-  const held = { getState, setState, coverageOf: coverage.current, merge, receive: clock.receive };
+  const held = { getState, setState, coverageNow: coverage.current, merge, receive: clock.receive };
   const purging = { ...held, unhold: coverage.evict, peerId, parked, folds, hasAdapter };
   const compactDeps = { store, stateStore, acks: fleet.acks, ...docPath.compaction };
   const compaction = createCompaction(compactDeps, coverage, boot?.compacted);
@@ -348,7 +355,7 @@ export function createEngine(options: EngineOptions): Engine {
     onOutbound: outbound.subscribe,
     onError: errors.subscribe,
     quarantine: parked.list,
-    retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
+    ...createRetries(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
     stranded: () => strandedWrites(store, peerId),
     purge: createPurge({ ...purging, exclusive }),

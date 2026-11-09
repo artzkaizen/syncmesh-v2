@@ -13,7 +13,6 @@ export const GRANDFATHERED: ReadonlySet<string> = new Set([
   "challengeOf",
   "channelsFor",
   "countsFor",
-  "coverageOf",
   "diffOf",
   "documentOf",
   "entryOf",

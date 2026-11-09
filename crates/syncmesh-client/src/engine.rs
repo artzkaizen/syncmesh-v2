@@ -912,6 +912,29 @@ impl Engine {
         })
     }
 
+    /// Re-offers the events of one author that its grant refused — `NoGrant`, `GrantStale` and
+    /// the rest of [`ValidationError::is_capability`] — and leaves everything else parked. What a
+    /// grant registering for that author is followed by (gaps U42): an event can arrive before
+    /// the grant that vouches for it, and in a room where no later batch folds nothing else would
+    /// offer it again. What the ladder still refuses is parked again.
+    pub fn retry_author(&mut self, author: &PeerId) -> Result<Received, StoreError> {
+        let (retry, kept): (Vec<Parked>, Vec<Parked>) = self
+            .parked
+            .take()
+            .into_iter()
+            .partition(|p| &p.entry.event.peer_id == author && p.verdict.is_capability());
+        // back first, so a store emptied by `take` is whole again before anything can fail
+        for parked in kept {
+            self.parked.park(parked);
+        }
+        let entries = retry.iter().map(|p| p.entry.clone()).collect();
+        self.receive_batch(entries).inspect_err(|_| {
+            for p in retry {
+                self.parked.park(p);
+            }
+        })
+    }
+
     fn fold(&mut self, entries: &[StoredEvent], source: FoldSource) -> FoldBatch {
         let write_keys = write_keys_of(entries.iter().map(|e| &e.event));
         for entry in entries {
