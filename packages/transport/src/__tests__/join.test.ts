@@ -25,7 +25,7 @@ import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
 import { cursorsFrame, decodeFrame } from "../frame.js";
-import { createJoinExchange } from "../join.js";
+import { PAGE_DOCS_BUDGET, createJoinExchange } from "../join.js";
 import { loopbackPair } from "../link.js";
 import { snapChunkFrame, snapManifestFrame } from "../snap-frame.js";
 import { ACME, BODY, CREATE, GLOBEX, NOTES, T0, key, mintFor, peer, write } from "./fixtures.js";
@@ -619,6 +619,33 @@ describe("what an install below a floor adopts (D46)", () => {
         expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
         expect(joiner.engine.coverage().synced.size).toBe(0);
       });
+
+    test("a checkpoint past the page's budget is left out, and the page says it is incomplete", async () => {
+      const holder = peer(40, "acct_x");
+      const joiner = peer(80, "acct_y");
+      for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+      const withDocs = { ...joiner.engine, hasDocColumns: () => true };
+      const small = CHECKPOINT(holder);
+      const big = { ...small, snapshot: new Uint8Array(PAGE_DOCS_BUDGET) };
+      const holderDocs: SnapshotDocs = {
+        serve: () => Promise.resolve({ checkpoints: [small, big], complete: true }),
+        install: () => Promise.resolve(false),
+      };
+      const taken: (readonly PageCheckpoint[])[] = [];
+      const joinerDocs: SnapshotDocs = {
+        serve: () => Promise.resolve({ checkpoints: [], complete: false }),
+        install: (checkpoints) => {
+          taken.push(checkpoints);
+          return Promise.resolve(true);
+        },
+      };
+      const pair = exchanges(holder, joiner, withDocs, { holder: holderDocs, joiner: joinerDocs });
+      // SAFETY: test fixture; the holder wrote three
+      pair.ask({ adoptUnvouched: true, floor: new Map([[holder.identity.peerId, 3 as SeqNum]]) });
+      await pair.settle();
+      expect(taken).toEqual([[small]]);
+      expect(joiner.engine.coverage().synced.size).toBe(0);
+    });
 
     test("a joiner that takes no documents adopts nothing below a floor, whatever the pages carried", async () => {
       const holder = peer(40, "acct_x");

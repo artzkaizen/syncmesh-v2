@@ -15,6 +15,7 @@ import {
 import type { SnapshotFrame } from "./snap-frame.js";
 import type { Withheld } from "./withheld.js";
 
+import { DEFAULT_MAX_FRAME_BYTES } from "./framing.js";
 import { snapAckFrame, snapChunkFrame, snapManifestFrame, snapRequestFrame } from "./snap-frame.js";
 import { servable } from "./withheld.js";
 
@@ -231,9 +232,9 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
       sendPages(pages.map((rows) => encodeSnapshotPage({ rows })));
       return undefined;
     }
-    return Promise.all(
-      pages.map(async (rows) => encodeSnapshotPage({ rows, docs: await docs.serve(rows) })),
-    ).then(sendPages);
+    return Promise.all(pages.map(async (rows) => fittedPage(rows, await docs.serve(rows)))).then(
+      sendPages,
+    );
   };
 
   const onManifest = (frame: Extract<SnapshotFrame, { kind: "snap-manifest" }>): void => {
@@ -407,6 +408,29 @@ const adopted = (
   if (!policy.adoptUnvouched) return undefined;
   return policy.floor === undefined ? at : lower(at, policy.floor);
 };
+
+/**
+ * The most a page spends on its documents' checkpoints: half a frame, so a page of rows and
+ * checkpoints still travels as one frame on every link ({@link DEFAULT_MAX_FRAME_BYTES}).
+ */
+export const PAGE_DOCS_BUDGET = DEFAULT_MAX_FRAME_BYTES / 2;
+
+/**
+ * A page of `rows` and as many of `docs`' checkpoints as fit {@link PAGE_DOCS_BUDGET}, in the
+ * order given. One left out makes the page incomplete: a joiner below a floor then adopts nothing
+ * for it rather than miss the document that did not fit.
+ */
+function fittedPage(rows: readonly KeyedRecord[], docs: PageDocs): Uint8Array {
+  let spent = 0;
+  const kept = docs.checkpoints.filter((c) => {
+    const size = c.checkpoint.length + c.snapshot.length;
+    if (spent + size > PAGE_DOCS_BUDGET) return false;
+    spent += size;
+    return true;
+  });
+  const complete = docs.complete && kept.length === docs.checkpoints.length;
+  return encodeSnapshotPage({ rows, docs: { checkpoints: kept, complete } });
+}
 
 /**
  * The documents follow the rows they are columns of, since a checkpoint is checked against the
