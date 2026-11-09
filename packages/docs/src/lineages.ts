@@ -79,7 +79,11 @@ export function listLineages(
 export interface LineageVersion<D> {
   readonly value: D;
   readonly lineage?: LineageId;
-  /** Updates of it the adapter could not read, left out (RFC-0023 §10). */
+  /**
+   * Updates of it the adapter could not read, left out (RFC-0023 §10). Every replica that
+   * materialises the lineage leaves the same ones out, so {@link Documents.restore} does not refuse
+   * on them.
+   */
   readonly failed: number;
   /** Blob-carried updates of it no carrier holds yet, left out. */
   readonly missing: number;

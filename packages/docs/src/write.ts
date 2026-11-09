@@ -313,7 +313,8 @@ export function createWrites(deps: WritesDeps) {
      * Brings a lineage that lost back as the document's winner (RFC-0023 §5.3, "recover the other
      * version"): a `replace()` with its snapshot, written on top of the lineage winning here, so
      * it wins and the version it displaces is listed in turn. A lineage this device holds only part
-     * of is refused ({@link LineageIncomplete}) rather than published partial.
+     * of is refused ({@link LineageIncomplete}) rather than published partial. Updates the adapter
+     * cannot read (`failed`) are left out, as every replica materialising the lineage leaves them.
      */
     restore: (address: DocAddress, lineage: LineageId | undefined, options?: MutateOptions) =>
       Result.gen(async function* () {

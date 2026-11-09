@@ -75,7 +75,8 @@ export class DocWriteConflict extends TaggedError("DocWriteConflict")<{
 /**
  * A lineage `restore()` would bring back only part of (RFC-0023 §5.3): updates of it this device
  * can no longer read — their events compacted with no snapshot of it left, history it never
- * received — or blob-carried ones no carrier holds yet. Nothing was written.
+ * received — or blob-carried ones no carrier holds yet. Nothing was written. Updates the adapter
+ * cannot read are not counted: a restore leaves them out, as every replica does.
  */
 export class LineageIncomplete extends TaggedError("LineageIncomplete")<{
   lost: number;

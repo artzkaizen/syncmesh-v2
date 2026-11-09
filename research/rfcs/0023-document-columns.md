@@ -1049,7 +1049,11 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    validator checks only that an anchor is older than its event, so a build without the floor
    can still write a shorter one, and peers trust it — and only
    a genesis may carry key 7: the validators of both runtimes refuse it on an edit, as the codecs
-   do. **Known gap:** the one order-dependence left is equivocation. An author that signs two
+   do. A window in weeks, months or years is measured as `durationMs` measures it, not refused.
+   The walk keeps its result only when each child genesis is stamped after its parent, so a row
+   that joins outside an event (a snapshot page, a repair record) hands every stamp it carries,
+   its geneses' and anchor's included, to the device's clock before it joins, as an event's stamp
+   is on receive. **Known gap (gaps U39):** the one order-dependence left is equivocation. An author that signs two
    geneses at one sequence puts one
    lineage in the cell twice; the join keeps the first by stamp, and with an anchor between the
    two stamps the result depends on the order the three meet. Only a Byzantine author reaches
