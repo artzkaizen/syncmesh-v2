@@ -477,10 +477,12 @@ fn lower<'a>(at: &Cursors, cap: impl Iterator<Item = (&'a PeerId, u64)>) -> Curs
 
 /// What a sender may claim for a request: its coverage only where it holds the asked slice. A
 /// sender whose own cursors are scoped (D23) to a slice the asked interest is not inside claims
-/// nothing (D46).
+/// nothing (D46). Nor does a sender whose cursors were adopted under a window, for any request:
+/// events are never windowed, so it may hold a row in part (`heldScope`).
 pub fn held_scope(own: &Coverage, asked: Option<&Interest>, snapshot: Snapshot) -> Snapshot {
-    let held = scope_from(own.scope.as_deref());
-    if own.scope.is_none() || narrows(asked, held.interest.as_ref()) {
+    let held = scope_from(own.scope.as_deref()).interest;
+    let windowed = held.as_ref().is_some_and(|i| i.window.is_some());
+    if own.scope.is_none() || (!windowed && narrows(asked, held.as_ref())) {
         return snapshot;
     }
     Snapshot {

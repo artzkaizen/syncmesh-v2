@@ -299,6 +299,30 @@ fn a_sender_scoped_to_another_slice_claims_no_coverage() {
 }
 
 #[test]
+fn a_sender_under_a_window_claims_no_coverage_even_for_that_window() {
+    // events are never windowed, so a holder under a window may hold a row in part (D23)
+    let mut holder_engine = engine(1);
+    write(&mut holder_engine, "a", Some("org:a"));
+    write(&mut holder_engine, "b", Some("org:a"));
+    let windowed = Interest::partitions([part("org:a")]).windowed(1);
+    let mut scoped = holder_engine.coverage();
+    scoped.scope = Some(syncmesh_client::interest_text(Some(&windowed)));
+    holder_engine.adopt_coverage(&scoped);
+    let author = holder_engine.peer_id().clone();
+    let mut holder = side(holder_engine, JoinOptions::new("holder"));
+
+    let mut joiner = side(engine(2), JoinOptions::new("joiner"));
+    let (_, ask) = joiner.join.request(Some(&windowed), true);
+    run(&mut joiner, &mut holder, vec![ask], &mut vec![]);
+    assert!(joiner.engine.state().read_row("notes", "b").is_some());
+    assert_eq!(
+        at(&author)(&joiner.engine),
+        0,
+        "a window's rows are not claimed whole"
+    );
+}
+
+#[test]
 fn withheld_tables_travel_in_no_snapshot_and_their_author_is_claimed_by_none() {
     let mut holder_engine = engine(1);
     write(&mut holder_engine, "a", None);

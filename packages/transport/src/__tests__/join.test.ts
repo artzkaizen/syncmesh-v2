@@ -21,7 +21,7 @@ import { cursorsFrame, decodeFrame } from "../frame.js";
 import { createJoinExchange } from "../join.js";
 import { loopbackPair } from "../link.js";
 import { snapChunkFrame, snapManifestFrame } from "../snap-frame.js";
-import { ACME, BODY, GLOBEX, NOTES, T0, key, mintFor, peer, write } from "./fixtures.js";
+import { ACME, BODY, CREATE, GLOBEX, NOTES, T0, key, mintFor, peer, write } from "./fixtures.js";
 
 interface JoinOptions {
   /** Pages of this size, so a test can prove the paging rather than assume it. */
@@ -554,5 +554,55 @@ describe("what an install below a floor adopts (D46)", () => {
     await pair.settle();
     expect(pair.outcomes.map(({ kind }) => kind)).toEqual(["installed"]);
     expect(joiner.engine.coverage().synced.size).toBe(0);
+  });
+});
+
+describe("a holder under a window (D23, O13)", () => {
+  test("holds a row it never had in part, and so claims no coverage for any window it serves", async () => {
+    const holder = peer(40, "acct_x");
+    const device = peer(80, "acct_y");
+    const joiner = peer(81, "acct_z");
+    for (const id of ["n1", "n2", "n3"]) (await write(holder, id, `body ${id}`)).unwrap();
+    const windowed = { partitions: [ACME], window: { newest: 1 } };
+    await device.engine.installSnapshot(holder.engine.snapshot({ interest: windowed }));
+    (
+      await holder.engine.mutate(
+        CREATE,
+        (tx) => tx.update(NOTES, key("n1"), new Map([[BODY, "edited"]])),
+        { partition: ACME },
+      )
+    ).unwrap();
+
+    // events are never windowed: the update to n1, a row outside the device's window, folds onto
+    // nothing, and the device now holds n1 with the patched cell alone
+    const { a, b, control } = loopbackPair();
+    const side = (p: Peer, end: typeof a, extra: Partial<BridgeOptions> = {}) =>
+      bridgeFramedLink(end, {
+        engine: p.engine,
+        identity: p.identity,
+        grants: p.grants,
+        now: () => T0,
+        ...extra,
+      });
+    const bridges = [side(holder, a), side(device, b, { interest: windowed })];
+    for (let round = 0; round < 8; round += 1) {
+      await control.flush();
+      for (const bridge of bridges) await bridge.flush();
+    }
+    for (const bridge of bridges) bridge.close();
+    expect([...(device.engine.state().get(NOTES)?.get(key("n1"))?.cells.keys() ?? [])]).toEqual([
+      BODY,
+    ]);
+    expect(device.engine.snapshot({ interest: windowed }).rows.map((row) => row.key)).toEqual([
+      key("n1"),
+    ]);
+
+    // so what it serves under a window is rows, never a claim to have them whole
+    const link = connect(device, joiner);
+    link.request(windowed);
+    await link.settle();
+    expect(readRow(joiner.engine.state(), NOTES, key("n1"))?.get(BODY)).toBe("edited");
+    expect(joiner.engine.coverage().synced.size).toBe(0);
+    link.close();
   });
 });
