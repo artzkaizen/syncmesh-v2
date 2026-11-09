@@ -44,8 +44,10 @@ const EVERY = Temporal.Duration.from({ milliseconds: 5 });
 const mappings = {
   tasks: {
     collection: schema.tables.tasks,
-    partition: (row: SourceRow) =>
-      scalarText(row["_partition"]) ?? `org:${scalarText(row["orgId"]) ?? "none"}`,
+    partition: (row: SourceRow) => {
+      const org = scalarText(row["orgId"]);
+      return scalarText(row["_partition"]) ?? (org === undefined ? undefined : `org:${org}`);
+    },
   },
 } satisfies ChangeMappings;
 
@@ -156,6 +158,40 @@ describe("a staged table, written by the mesh and by something outside it", () =
     const report = (await running.done).unwrap();
     expect(report.transactions).toBe(1);
     expect(storedWatermark(engine, source.name)).toBe(report.watermark);
+  });
+
+  test("an outside update to a row the mesh has not placed yet still lands in the row's instance", async () => {
+    const driver = await openPair(":memory:", schemaName(tables));
+    const { stores, engine, sent } = await authority(driver);
+    await stores.driver.run(
+      `INSERT INTO tasks (id, orgId, title, status) VALUES ('t2', 'acme', 'from outside', 'open')`,
+    );
+    // the update commits after the first sweep claimed the insert and before its fold placed the
+    // row, so it is filed with no `_partition` and carries only `status`
+    let raced = false;
+    const racing: SqlDriver = {
+      ...stores.driver,
+      run: async (sql, params) => {
+        await stores.driver.run(sql, params);
+        if (raced || !sql.includes("SET sweep")) return;
+        raced = true;
+        await stores.driver.run(`UPDATE tasks SET status = 'done' WHERE id = 't2'`);
+      },
+    };
+    const source = stagedChangeSource({ name: "staged", driver: racing, tables, every: EVERY });
+    const running = (await startCapture({ engine, source, mappings })).unwrap();
+    await eventually(() => row(engine, "t2")?.["status"] === "done", "the raced update");
+    running.stop();
+    (await running.done).unwrap();
+
+    expect(
+      sent.flatMap((event) =>
+        event.changes
+          .filter((change) => change.table === TASKS)
+          .map((change) => `${String(event.partition)} ${change.kind} ${change.key}`),
+      ),
+    ).toEqual(["org:acme insert t2", "org:acme update t2"]);
+    expect(await tableRows(stores.driver)).toEqual(["t2 from outside done org:acme"]);
   });
 
   test("a restart sweeps what was written while stopped, and nothing already in the log", async () => {

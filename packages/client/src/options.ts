@@ -201,7 +201,9 @@ export interface SqliteStorage {
    * ORM call outside `mesh.write` — rather than let the row change with no event to carry it
    * (gaps U5). Default `true`; `false`, or `{ except: [table] }` for the tables something else
    * writes, or `{ stage: [table] }` to file such writes for `stagedChangeSource` (RFC-0025).
-   * Applies where the mesh installs the tables: a `driver`, or the platform default.
+   * Applies where the mesh installs the tables: a `driver`, or the platform default. Staging is
+   * for an authority's store: the events a sweep becomes are signed by the engine that runs
+   * `startCapture`, so on a device they carry the device's signature and its grants.
    */
   readonly strict?: StrictCapture;
   /**

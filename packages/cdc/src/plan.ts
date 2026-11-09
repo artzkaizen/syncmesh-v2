@@ -15,9 +15,12 @@ export interface PlannedEvent {
   readonly changes: readonly Change[];
 }
 
-/** What the engine already holds, for the two messages that cannot say it themselves. */
+/** What the engine already holds, for the messages that cannot say it themselves. */
 export interface HeldRows {
-  /** The instance a row was born in. A delete carries no row, so its instance can only be read. */
+  /**
+   * The instance a row was born in. A delete carries no row, and an update may carry only the
+   * columns it changed, so for both the instance the engine holds is the answer.
+   */
   readonly partitionOf: (table: TableName, key: RowKey) => PartitionKey | undefined;
   /** Every live key of a collection, for the one message that is table-wide: `truncate`. */
   readonly liveKeys: (table: TableName) => readonly RowKey[];
@@ -177,13 +180,19 @@ function plannedTouch(
     return Result.ok([partition, { kind: "delete", table: collection.name, key }]);
   }
   const row: SourceRow = last.t === "insert" ? last.row : last.after;
-  const partition = partitionOf(touch.table, key, touch.mapping, row);
+  const inserted = touch.born || touch.recreated;
+  // a row keeps the instance it was born in, so an update to a row the engine holds is filed
+  // there: the mapping sees only what the update carried, which need not be enough to place it
+  const held = inserted ? undefined : deps.held.partitionOf(collection.name, key);
+  const partition =
+    held === undefined
+      ? partitionOf(touch.table, key, touch.mapping, row)
+      : Result.ok<PartitionKey, CaptureError>(held);
   if (partition.isErr()) return Result.err(partition.error);
   const cells = meshCells(collection, row);
-  const change: Change =
-    touch.born || touch.recreated
-      ? { kind: "insert", table: collection.name, key, row: cells }
-      : { kind: "update", table: collection.name, key, patch: cells };
+  const change: Change = inserted
+    ? { kind: "insert", table: collection.name, key, row: cells }
+    : { kind: "update", table: collection.name, key, patch: cells };
   return Result.ok([partition.value, change]);
 }
 

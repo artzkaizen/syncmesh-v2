@@ -122,6 +122,14 @@ Between `begin` and `commit`, changes accumulate. On `commit`, the authority
 folds them into **one signed event per partition touched** (one event is one
 partition, M6), commits them, writes the watermark, and only then acks it.
 
+`partition(row)` places a row the engine does not hold yet. An update to a row
+it holds is filed in the instance the engine holds it in, which is where the
+kernel keeps a row whatever a later event names (`cdc/src/plan.ts`): an update
+may carry only the columns it changed (TOAST, a staged sweep, RFC-0025), and
+a database that changes the column the mapping reads does not move the row to
+an instance whose peers never held it. Added 2026-11-08 (Jace delegated the
+call) with RFC-0025; moving a row between instances is not something CDC does.
+
 ## Direction is fixed, and that is the whole design
 
 **DB → mesh only.** A CDC-backed collection is **read-only on devices**, and the

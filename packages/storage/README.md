@@ -103,7 +103,10 @@ await startCapture({
     tasks: {
       collection: schema.tables.tasks,
       // the row's own partition, or one for a row the outside writer inserted
-      partition: (row) => scalarText(row._partition) ?? `org:${String(row.orgId)}`,
+      partition: (row) => {
+        const org = scalarText(row.orgId);
+        return scalarText(row._partition) ?? (org === undefined ? undefined : `org:${org}`);
+      },
     },
   },
 });

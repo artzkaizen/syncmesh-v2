@@ -81,8 +81,9 @@ const sourceRow = (table: Table, cells: Row, partition: string | null): SourceRo
  * One sweep's rows as one transaction: each row's net effect across every write the sweep took,
  * exactly as a capture nets a transaction's log, so an update carries only the columns that
  * changed — a field the writer left alone is no write to it — and a counter carries its
- * increment. `_partition` rides each row: the row's own once the mesh placed it, `null` on a row
- * the outside writer inserted, which the mapping places.
+ * increment. `_partition` rides each row as the guard filed it: the row's own once the mesh placed
+ * it, `null` on a row the outside writer inserted. The bridge files an update to a row the engine
+ * holds in the instance it holds it in, so the mapping places only rows the mesh has not seen.
  */
 function sweepMessages(
   tables: ReadonlyMap<string, Table>,
@@ -153,7 +154,9 @@ async function nextRows(
  * Name the table in `strict: { stage: [...] }` where the stores are opened; an unarmed write to
  * it is then filed in the queue instead of refused, and this source, behind `startCapture`,
  * turns each sweep of the queue into events the authority signs. The mapping is the table onto
- * itself, placing a row the outside writer inserted:
+ * itself, placing a row the outside writer inserted. It returns `undefined` when the row says too
+ * little — an update to a row the mesh never held carries only what changed — and capture stops
+ * with `RowUnplaceable` rather than file the row in an instance nobody syncs:
  *
  * @example
  * ```ts
@@ -165,7 +168,10 @@ async function nextRows(
  *   mappings: {
  *     tasks: {
  *       collection: schema.tables.tasks,
- *       partition: (row) => scalarText(row._partition) ?? `org:${String(row.orgId)}`,
+ *       partition: (row) => {
+ *         const org = scalarText(row.orgId)
+ *         return scalarText(row._partition) ?? (org === undefined ? undefined : `org:${org}`)
+ *       },
  *     },
  *   },
  * })).unwrap()

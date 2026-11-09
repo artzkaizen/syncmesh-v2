@@ -78,6 +78,21 @@ describe("what a row's net effect is", () => {
     ]);
   });
 
+  test("an update to a held row is filed in the instance the row was born in, whatever it carries", async () => {
+    const engine = await held();
+    // a staged update carries only what changed, and a database may move the column the mapping
+    // reads: neither may send the update to an instance whose peers never held the row
+    const planned = plan(engine, [
+      { t: "update", table: "tasks", key: "t1", after: { title: "patched" } },
+    ]);
+    const moved = plan(engine, [
+      { t: "update", table: "tasks", key: "t1", after: { id: "t1", orgId: "globex" } },
+    ]);
+
+    expect(planned.map((event) => event.partition)).toEqual([ACME]);
+    expect(moved.map((event) => event.partition)).toEqual([ACME]);
+  });
+
   test("deleted, re-inserted and deleted again still tombstones the row this peer held", async () => {
     const engine = await held();
     const planned = plan(engine, [

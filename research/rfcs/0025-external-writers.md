@@ -95,8 +95,17 @@ JSON as text). The queue is `syncmesh.staged` on Postgres, beside the log in the
 schema, and `syncmesh_staged` in `main` on SQLite, where the table is, because a trigger cannot
 write an attached file.
 
+On Postgres the filing function is `syncmesh."stage_<table>"`. A table name runs to 64
+characters and Postgres cuts an identifier at 63 bytes, so for a name too long to fit the
+function is named by a prefix of it and sixteen hex digits of its SHA-256: two long names that
+share a prefix keep a function each.
+
 Switching a table between `refuse`, `stage` and `off` replaces its triggers at the next open; the
-guard has its own row in `meta`, so the switch is not a change of the tables' shape (U5).
+guard has its own row in `meta`, so the switch is not a change of the tables' shape (U5). The
+refusing guard's text now also drops any staging trigger and function, so every existing
+install reinstalls its guard once at its next open; on Postgres that reinstall prints a
+`NOTICE` per refused table for the `DROP ... IF EXISTS` of a staging trigger that was never
+there. The notices are left as they are.
 
 ### A sweep
 
@@ -113,8 +122,18 @@ Each sweep becomes one transaction on the stream, and its number, zero-padded to
 is the watermark. A sweep's rows are netted per row exactly as a capture nets a transaction's log
 (`netEffects`, `netChange` in `storage/src/capture.ts`): an insert carries the row, a delete the
 key, an update only the columns whose value differs from the row's first before-image, and a
-counter column its increment. The row's `_partition` rides along under that name: the row's own
-once the mesh placed it, `null` for a row the outside writer inserted, which the mapping places.
+counter column its increment. The row's `_partition` rides along under that name, as the guard
+saw it when the write was filed: the row's own once the mesh placed it, `null` for a row the
+outside writer inserted. It is `null` too for an update that committed after a sweep took the
+row's insert and before the fold of that sweep placed it, and that update carries only the
+columns it changed, so the mapping cannot be what places it. The bridge does (`cdc/src/plan.ts`):
+an update to a row the engine holds is filed in the instance the engine holds it in, which is
+where the kernel keeps a row whatever later events say. The mapping places only a row the engine
+does not hold. Given an update to a row the mesh never held, which has neither a `_partition`
+nor the columns that would place it, the mapping returns `undefined` and capture stops with
+`RowUnplaceable`; a guess such as `` `org:${String(row.orgId)}` `` would read `org:undefined` and
+sign the row into an instance no device syncs. Such a row exists only if the table was written
+with no guard before it was staged; the backfill under "Left" is what places it.
 With nothing new the stream waits `every` (default one second), or until `sweep()` is called.
 
 ```ts
@@ -126,7 +145,10 @@ const running = (await startCapture({
   mappings: {
     tasks: {
       collection: schema.tables.tasks,
-      partition: (row) => scalarText(row._partition) ?? `org:${String(row.orgId)}`,
+      partition: (row) => {
+        const org = scalarText(row.orgId)
+        return scalarText(row._partition) ?? (org === undefined ? undefined : `org:${org}`)
+      },
     },
   },
 })).unwrap()
@@ -199,7 +221,10 @@ Not built by this RFC's change, each a follow-on with no decision outstanding:
 4. A cap on one sweep's size. A bulk outside write is one sweep and so one event per partition,
    the large-event case RFC-0021 caps for `truncate`.
 5. Refusing an outside write to a document or derived column at the trigger, rather than
-   leaving it out of the event.
+   leaving it out of the event. Until then such a write is dropped from the event without a
+   word, and the table holds a value no peer has; a `RAISE WARNING` in the filing function was
+   considered and not added, since the refusal is the fix and a warning nobody reads on a
+   service's connection is no substitute.
 
 ## Tests
 
@@ -213,4 +238,14 @@ Not built by this RFC's change, each a follow-on with no decision outstanding:
 - `storage/src/__tests__/staged.test.ts`, an authority engine over its own SQLite with a staged
   table: a captured write and two outside writes become one authority-signed event carrying only
   the changed column; the fold writes the outside row back with its partition and files nothing,
-  so no further event follows; a restart sweeps only what was written while stopped.
+  so no further event follows; a restart sweeps only what was written while stopped; an outside
+  update that commits after a sweep took the row's insert and before its fold placed the row is
+  filed in the row's instance, not wherever its changed columns would place it.
+- `adapters/postgres/src/__tests__/staged.test.ts`, a real Postgres with the outside writer on a
+  connection of its own: twenty updates and a transaction held open across sweeps reach the mesh
+  with the last committed value and every event in the row's instance; the same race as above,
+  with the update committed from the other connection.
+- `cdc/src/__tests__/plan.test.ts`: an update to a held row is filed in the instance the engine
+  holds it in, whether it carries only a changed column or a different partition column.
+- `storage/src/__tests__/strict.test.ts`: the Postgres filing function's name fits 63 bytes and
+  differs for two long table names that share a prefix.
