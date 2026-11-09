@@ -74,11 +74,15 @@ export type { BudgetReport, StorageBudget } from "./budget.js";
 export { sweepBudget } from "./budget.js";
 export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
+export type { StrictCapture } from "./guard.js";
+export { installGuard } from "./guard.js";
 export type { Projection, ProjectionOptions } from "./projection.js";
 export { tablesProjection } from "./projection.js";
 export type { BlobError, BlobHash, BlobStore } from "./blob.js";
 export type { BlobHome, BlobHomes } from "./blob-homes.js";
 export { memoryBlobHomes, sqlBlobHomes } from "./blob-homes.js";
+export type { BlobLedger, BlobLedgerState, BlobRow, BlobWindow } from "./blob-ledger.js";
+export { joinBlobRows, laterStamp, memoryBlobLedger, sqlBlobLedger } from "./blob-ledger.js";
 export {
   BlobCorrupt,
   BlobNotFound,

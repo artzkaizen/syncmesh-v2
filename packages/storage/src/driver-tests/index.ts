@@ -2,6 +2,7 @@ import type { SuiteCase } from "@syncmesh/engine";
 
 import type { SqlDriver } from "../driver.js";
 
+import { blobLedgerCases } from "./blob-ledger.js";
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
@@ -12,9 +13,10 @@ import { eventCases } from "./events.js";
 import { holeCases } from "./holes.js";
 import { journalCases } from "./journal.js";
 import { readFilterCases } from "./read-filter.js";
+import { strictCases } from "./strict.js";
 
 export { LADDER, PRINCIPALS, ROWS, RULES, asCells } from "./read-filter.js";
-export { COUNTERS, JOBS, entry } from "./fixtures.js";
+export { COUNTERS, JOBS, asFold, entry } from "./fixtures.js";
 export {
   CRASH_AUTHOR,
   CRASH_BATCH,
@@ -51,6 +53,7 @@ export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...stateCases(openDriver),
     ...compactionCases(openDriver),
     ...blobCases(openDriver),
+    ...blobLedgerCases(openDriver),
     ...docCases(openDriver),
   ];
 }
@@ -63,6 +66,7 @@ export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
   return [
     ...captureCases(openDriver),
     ...captureRuleCases(openDriver),
+    ...strictCases(openDriver),
     ...tablesCases(openDriver),
     ...journalCases(openDriver),
     ...docColumnCases(openDriver),

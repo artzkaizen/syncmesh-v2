@@ -13,8 +13,11 @@ export {
   HandleInvalidated,
   LineageIncomplete,
   NotADocColumn,
+  SnapshotUnsealable,
   UpdateTooLarge,
 } from "./errors.js";
+export type { SealingKeys } from "./sealed-snapshot.js";
+export { isSealedSnapshot, openSnapshot, sealSnapshot } from "./sealed-snapshot.js";
 export type {
   Derive,
   DocsEngine,

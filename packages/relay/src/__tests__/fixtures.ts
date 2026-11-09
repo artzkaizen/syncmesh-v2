@@ -147,6 +147,14 @@ export const write = async (
   return signEvent(event, p.identity).wire;
 };
 
+/** One delete on a peer, and the signed wire a relay would carry for it. */
+export const remove = async (p: Peer, id: string, partition = ACME): Promise<Uint8Array> => {
+  const event = (
+    await p.engine.mutate(CREATE, (tx) => tx.delete(NOTES, key(id)), { partition })
+  ).unwrap();
+  return signEvent(event, p.identity).wire;
+};
+
 export const bodyOf = (p: Peer, id: string): CellValue | undefined =>
   readRow(p.engine.state(), NOTES, key(id))?.get(BODY);
 

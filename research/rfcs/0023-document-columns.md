@@ -624,8 +624,11 @@ when no adapter is configured, and it is forced for sealed partitions.
   that carries any, and that partition's derived columns stay unset on the host (`NULL`, or the
   column's SQL default). Devices holding the partition key compute them as they do everywhere
   else. The host reads only the checkpoint's signed core, never its snapshot: it holds no adapter,
-  and in a sealed partition the snapshot would be sealed to the partition key (§11). Sealing that
-  blob is not built yet; the rule for derived values does not depend on it.
+  and in a sealed partition the snapshot is sealed to the partition key (§11). **Built (gaps U24,
+  D49, decided 2026-11-08, Jace delegated the call):** the device seals it under the partition's
+  newest content key, bound to the document and lineage, key 7 names the sealed bytes, and the
+  host refuses a sealed partition's checkpoint whose snapshot is not sealed and keeps the
+  ciphertext it is given.
 - An opaque host installs a device checkpoint **provisionally** (§16.6): it checks the
   signature, the column's adapter, the winning lineage, the snapshot hash, that `covers` claims
   nothing it has not folded, that it is not behind the snapshot already held, and that every
@@ -812,7 +815,9 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   judged as of now: one revoked after it produced a valid checkpoint is refused. A device's `install` re-derives the version from the bytes, so whom it trusts stays
   the caller's question (§7.3).
 - **Sealed partitions:** doc bytes are inside the sealed core, the authority is structurally
-  opaque (§7.2), and a checkpoint's snapshot blob is sealed to the partition key (not built yet).
+  opaque (§7.2), and a checkpoint's snapshot blob is sealed to the partition key (built, gaps
+  U24, D49: `docs/src/sealed-snapshot.ts`; a device with no key for the partition produces no
+  checkpoint, and a joiner opens the host's ciphertext with the key before its adapter reads it).
   The checkpoint's core stays readable to the host, so it carries no derived values: key 8 is
   empty and the host's derived columns for the partition stay unset (§7.2).
 - **`replace()` has an optional rule of its own** (decided in §16.2): `allow: { replace:

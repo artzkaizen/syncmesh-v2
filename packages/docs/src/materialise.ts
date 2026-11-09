@@ -10,13 +10,15 @@ import type {
 import type { Hlc, PeerId, Row, SeqNum } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
+import { getRecord } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { signCheckpoint, type Identity, type SignedCheckpoint } from "@syncmesh/wire";
 
 import type { DocumentAdapter, UpdateRejected } from "./adapter.js";
 
 import { snapshotHash } from "./checkpoint.js";
-import { DocPending, DocTooLarge } from "./errors.js";
+import { DocPending, DocTooLarge, SnapshotUnsealable } from "./errors.js";
+import { sealSnapshot, type SealingKeys } from "./sealed-snapshot.js";
 
 /** What the runtime asks of an engine: the write path, the fold feed and the doc log. */
 export type DocsEngine = Pick<
@@ -179,14 +181,19 @@ export async function materialise<D>(
 /** A signed checkpoint and the snapshot bytes it names by hash (RFC-0023 §5.5). */
 export interface ProducedCheckpoint {
   readonly signed: SignedCheckpoint;
+  /** What the checkpoint's key 7 hashes: for a sealed partition, the snapshot sealed to its key. */
   readonly snapshot: Uint8Array;
 }
 
 /**
  * Materialises, then signs what the snapshot is: the record a joiner below the floor installs, and
- * the one an opaque host takes the derived values from (key 8, RFC-0023 §7.2). A `sealed`
- * partition's derived values are plaintext read out of sealed content, so they never leave the
- * devices that hold its key (§11): key 8 is then empty, while this device's own row still gets them.
+ * the one an opaque host takes the derived values from (key 8, RFC-0023 §7.2).
+ *
+ * A `sealed` partition's checkpoint gives the host neither plaintext (§11, gaps U24): key 8 is
+ * empty, because derived values are read out of sealed content, while this device's own row still
+ * gets them; and the snapshot is sealed to the partition's newest content key from `keys`, so the
+ * bytes key 7 names, and the host keeps, are ciphertext. Without a key for the partition the
+ * checkpoint is refused (`SnapshotUnsealable`), never produced in the clear.
  */
 export async function produceCheckpoint<D>(
   engine: DocsEngine,
@@ -197,11 +204,24 @@ export async function produceCheckpoint<D>(
   at: Hlc,
   derive?: Derive<D>,
   sealed = false,
+  keys?: SealingKeys,
 ) {
   return Result.gen(async function* () {
     const made = yield* Result.await(materialise(engine, adapter, address, replica, at[0], derive));
     const tail = yield* Result.await(engine.docTail(address));
-    const snapshot = tail.snapshot?.bytes ?? adapter.snapshot(adapter.create(replica));
+    const plain = tail.snapshot?.bytes ?? adapter.snapshot(adapter.create(replica));
+    const partition = getRecord(engine.state(), address.table, address.key)?.partition;
+    if (sealed && partition === undefined)
+      return Result.err(
+        new SnapshotUnsealable({
+          partition: "",
+          message: "a sealed document's row names no partition to seal its snapshot to",
+        }),
+      );
+    const snapshot =
+      sealed && partition !== undefined
+        ? yield* sealSnapshot(keys, partition, address, tail.lineage, plain)
+        : plain;
     // the values the cover just wrote are the snapshot's: it was taken from the same document
     const derived = sealed ? undefined : made.derived;
     const signed = signCheckpoint(

@@ -141,7 +141,7 @@ describe("what the relay reports (D17)", () => {
  * id — so this drives a room through every path that reports, and reads what came out.
  */
 describe("no relay variant carries identity (D48)", () => {
-  test("open, join, catch-up, an event, a blob put and a get report no peer, room, event or payload", async () => {
+  test("open, join, catch-up, an event, a blob put, a get and a sweep report no peer, room, event or payload", async () => {
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
     const bytes = Uint8Array.of(9, 8, 7, 6);
@@ -160,6 +160,8 @@ describe("no relay variant carries identity (D48)", () => {
     await tick();
     cb.receive(blobGetFrame(hashOf(bytes)));
     await tick();
+    // and a retention pass, which reports the blob sweep
+    await served.sweep();
 
     const types = new Set(seen.map((e) => e.type));
     for (const type of [
@@ -168,6 +170,7 @@ describe("no relay variant carries identity (D48)", () => {
       "relay.catchup",
       "relay.event",
       "relay.blob.put",
+      "relay.blob.sweep",
     ] as const)
       expect(types.has(type)).toBe(true);
     expect(of("relay.blob.get").map((e) => e.sizes)).toEqual([{ bytes: 4 }]);

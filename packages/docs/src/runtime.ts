@@ -13,6 +13,7 @@ import type { DocBlobs } from "./blobs.js";
 import type { FlushError, OpenDoc, OpenError, Pacing } from "./documents.js";
 import type { DocPending, DocTooLarge } from "./errors.js";
 import type { Derive, DocsEngine } from "./materialise.js";
+import type { SealingKeys } from "./sealed-snapshot.js";
 
 import { columnAdapter, resolveAdapterId } from "./adapter.js";
 import { withBlobs } from "./blobs.js";
@@ -49,6 +50,18 @@ export interface DocumentsOptions {
    * (§11), taken from the same schema so the two cannot disagree. Absent, no column is derived.
    */
   readonly derive?: Derivers;
+  /**
+   * The schema's sealed partition kinds (`schema.sealedKinds`, D40): a checkpoint of a document in
+   * one carries no derived values and a snapshot sealed to the partition key (RFC-0023 §11).
+   * Default `derive.sealedKinds`; give it where nothing is derived.
+   */
+  readonly sealedKinds?: ReadonlySet<string>;
+  /**
+   * This device's content keys for sealed partitions (its key ring): what a sealed partition's
+   * checkpoint snapshot is sealed under by `checkpoint` and opened with by `install` (gaps U24).
+   * Absent, both refuse a sealed partition's checkpoint rather than handle it in the clear.
+   */
+  readonly keys?: SealingKeys;
   readonly pacing?: Pacing;
   /**
    * Materialise a document once its tail passes the adapter's `snapshotEvery`/`snapshotEveryBytes`
@@ -80,11 +93,15 @@ export interface DocumentsOptions {
   readonly nonce?: () => Uint8Array;
 }
 
-/** Whether the row at `address` is in a sealed partition, whose derived values never leave it (§11). */
-function sealedAt(engine: DocsEngine, derive: Derivers | undefined, address: DocAddress) {
+/** Whether the row a document lives on is in a partition of a sealed kind (D40). */
+const sealedAt = (
+  engine: DocsEngine,
+  kinds: ReadonlySet<string> | undefined,
+  address: DocAddress,
+) => {
   const partition = getRecord(engine.state(), address.table, address.key)?.partition;
-  return partition !== undefined && derive?.sealedKinds.has(kindOf(partition)) === true;
-}
+  return partition !== undefined && kinds?.has(kindOf(partition)) === true;
+};
 
 /**
  * Materialises each document a fold touched once its tail passes the adapter's bounds (RFC-0023
@@ -147,7 +164,10 @@ export function createDocuments(options: DocumentsOptions) {
       return computed.isOk() ? computed.value : undefined;
     };
   };
-  const sealed = (address: DocAddress) => sealedAt(engine, options.derive, address);
+  const sealed = (address: DocAddress) =>
+    sealedAt(engine, options.sealedKinds ?? options.derive?.sealedKinds, address);
+  // a checkpoint's last two arguments: whether its partition is sealed, and the keys it seals under
+  const sealing = (address: DocAddress) => [sealed(address), options.keys] as const;
   const rederive =
     options.derive === undefined
       ? undefined
@@ -237,7 +257,7 @@ export function createDocuments(options: DocumentsOptions) {
               fresh(),
               at,
               derive(address),
-              sealed(address),
+              ...sealing(address),
             ),
           ),
         );
@@ -258,6 +278,7 @@ export function createDocuments(options: DocumentsOptions) {
               fresh(),
               now(),
               derive(address),
+              ...sealing(address),
             ),
           ),
         );

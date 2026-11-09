@@ -79,4 +79,20 @@ export type { AppPhase, Knock, MeshShaping, RunningTransports } from "./transpor
 export { TransportAddFailed, runTransports } from "./transports.js";
 export { keyRingFor, transportContextFor } from "./transport-context.js";
 
+export type { DeviceIdentityOptions } from "./identity.js";
 export { DeviceKeyUnavailable, deviceIdentity, deviceIncarnation } from "./identity.js";
+export type {
+  CryptoKeyHolder,
+  KeyStoreFactory,
+  SecretStore,
+  SecretStoreVaultOptions,
+  SeedVault,
+} from "./vault.js";
+export {
+  PLAINTEXT_VAULT,
+  createIndexedDbKeyHolder,
+  createPlaintextVault,
+  createSecretStoreVault,
+  createWebCryptoVault,
+  platformVault,
+} from "./vault.js";

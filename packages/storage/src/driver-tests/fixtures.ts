@@ -23,7 +23,9 @@ import { grownCore } from "@syncmesh/wire/wire-tests";
 
 import type { SqlDriver, SqlValue } from "../driver.js";
 
+import { folding } from "../guard.js";
 import { logTable, logPlacement } from "../namespace.js";
+import { inTransaction } from "../sql.js";
 
 export const A = parsePeerId("a".repeat(64)).unwrap();
 export const B = parsePeerId("b".repeat(64)).unwrap();
@@ -209,3 +211,10 @@ export const sqlText = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
         jsonText: (v: SqlValue) => String(v),
         guard: `SELECT armed FROM syncmesh_capture`,
       };
+
+/**
+ * Runs `fn` as the fold writes: in a transaction, past the strict guard (gaps U5). How a suite
+ * seeds rows that stand for what a peer's events folded, rather than for an app's write.
+ */
+export const asFold = (driver: SqlDriver, fn: () => Promise<void>) =>
+  inTransaction(driver, () => folding(driver, fn));

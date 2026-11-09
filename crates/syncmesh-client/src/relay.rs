@@ -38,6 +38,7 @@ use syncmesh_core::relay_frames::{
     join_core, join_frame,
 };
 
+use crate::blobs::{PutRefusal, put_answer};
 use crate::engine::{Engine, FoldBatch};
 use crate::grants::GrantRegistry;
 use crate::holdback::Holdback;
@@ -96,6 +97,15 @@ pub enum Action {
     BlobAnswer {
         hash: String,
         bytes: Option<Vec<u8>>,
+    },
+    /// The relay answered a put: kept (`None`), or refused for the partition's budget or grant.
+    BlobPutAnswer {
+        hash: String,
+        refusal: Option<PutRefusal>,
+    },
+    /// A put that could not leave — no live, keyed link — so no answer to it will come.
+    BlobPutUnsent {
+        hash: String,
     },
     /// Another device spoke through this relay, so the relay demonstrably carries it.
     PeerHeard(PeerId),
@@ -676,6 +686,11 @@ impl RelayLink {
                 bytes: Some(bytes),
             }),
             RelayFrame::BlobMissing { hash } => out.push(Action::BlobAnswer { hash, bytes: None }),
+            RelayFrame::BlobStored { .. } | RelayFrame::BlobRefused { .. } => {
+                if let Some((hash, refusal)) = put_answer(&frame) {
+                    out.push(Action::BlobPutAnswer { hash, refusal });
+                }
+            }
             // a `retention` refusal's floor has nowhere to go here: the recovery record (`Rejoins`,
             // gaps U31) takes peer floors only, so it hangs up and redials on its backoff (gaps U37)
             RelayFrame::Error { code, message, .. } => {
@@ -696,10 +711,6 @@ impl RelayLink {
             | RelayFrame::Join(_)
             | RelayFrame::BlobPut { .. }
             | RelayFrame::BlobGet { .. }
-            // this client's uploads do not wait on an answer, so a stored or refused put is news
-            // to nobody here; the TypeScript client is the one that surfaces a quota (D18)
-            | RelayFrame::BlobStored { .. }
-            | RelayFrame::BlobRefused { .. }
             // this client keeps no write ledger, so a refusal of its write has nowhere to land
             | RelayFrame::Refusal { .. } => {}
         }
@@ -1095,6 +1106,17 @@ impl RelayLink {
     pub fn send_raw_frame(&mut self, plain: Vec<u8>) -> Vec<Action> {
         let mut out = Vec::new();
         self.send_safe(plain, &mut out);
+        out
+    }
+
+    /// A `blob-put` frame for `hash`, sealed and sent as [`RelayLink::send_raw_frame`] sends one;
+    /// one that cannot leave is said at once ([`Action::BlobPutUnsent`]), so the put that asked
+    /// does not wait out an answer that cannot come.
+    pub fn send_blob_put(&mut self, hash: String, plain: Vec<u8>) -> Vec<Action> {
+        let mut out = self.send_raw_frame(plain);
+        if !out.iter().any(|action| matches!(action, Action::Send(_))) {
+            out.push(Action::BlobPutUnsent { hash });
+        }
         out
     }
 }

@@ -1,35 +1,18 @@
-import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind } from "@syncmesh/schema";
-
 import type { CaptureSql, Dialect } from "./dialect.js";
-import type { LogPlacement, SqlValue } from "./driver.js";
+import type { LogPlacement } from "./driver.js";
 import type { Rung } from "./ladder.js";
 
 import { SQLITE_DOCS, SQLITE_DOC_SNAPSHOTS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
 import { sqliteGapTables, sqliteGaps } from "./dialect-gaps.js";
+import { SQLITE_GUARD, SQLITE_GUARD_ROW, SQLITE_ROW as GUARD } from "./dialect-guard.js";
 import { sqliteOperations } from "./dialect-operations.js";
+import { sqliteCell, sqlType } from "./dialect-sqlite-cells.js";
 import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
 import { JOURNAL_DDL } from "./journal.js";
 import { ladder } from "./ladder.js";
 import { logTable, sqliteLogIndex } from "./namespace.js";
 
 const CHANGES = "syncmesh_changes";
-const GUARD = "syncmesh_capture";
-
-const sqlType = (kind: ColumnKind): string => {
-  switch (kind) {
-    case "integer":
-    case "timestamp":
-    case "boolean":
-      return "INTEGER";
-    case "float":
-      return "REAL";
-    case "blob":
-      return "BLOB";
-    default:
-      return "TEXT";
-  }
-};
 
 /**
  * The logged image of a row as one JSON object. Bytes travel as hex, since JSON cannot hold a
@@ -61,8 +44,7 @@ const capture: CaptureSql = {
     const armed = `(SELECT armed FROM ${GUARD} WHERE id = 1) = 1`;
     const statements = [
       `CREATE TABLE IF NOT EXISTS ${CHANGES} (seq INTEGER PRIMARY KEY AUTOINCREMENT, tbl TEXT NOT NULL, key TEXT NOT NULL, op TEXT NOT NULL, old TEXT, new TEXT)`,
-      `CREATE TABLE IF NOT EXISTS ${GUARD} (id INTEGER PRIMARY KEY, armed INTEGER NOT NULL)`,
-      `INSERT OR IGNORE INTO ${GUARD} (id, armed) VALUES (1, 0)`,
+      ...SQLITE_GUARD_ROW,
     ];
     for (const table of tables) {
       const name = literal(table.name);
@@ -90,6 +72,7 @@ const capture: CaptureSql = {
   },
   arm: `UPDATE ${GUARD} SET armed = 1 WHERE id = 1`,
   disarm: `UPDATE ${GUARD} SET armed = 0 WHERE id = 1`,
+  ...SQLITE_GUARD,
   selectLog: `SELECT tbl, key, op, old, new FROM ${CHANGES} ORDER BY seq`,
   clearLog: `DELETE FROM ${CHANGES}`,
   stampPartition: (table, pk, partitionColumn) =>
@@ -130,24 +113,6 @@ const metaRow = (table: string, key: string): Rung => ({
   write: (driver, step) =>
     driver.run(`INSERT OR REPLACE INTO ${table} (key, value) VALUES (?, ?)`, [key, String(step)]),
 });
-
-const sqliteCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
-  if (cell === null) return null;
-  if (cell instanceof Uint8Array) return cell;
-  switch (kind) {
-    case "boolean":
-      return cell === true ? 1 : 0;
-    case "json":
-      return JSON.stringify(cell);
-    case "integer":
-    case "float":
-    case "timestamp":
-      return Number(cell);
-    default:
-      // SAFETY: a text or uuid cell passed the column's kind check when it was written, so it is a string
-      return cell as string;
-  }
-};
 
 /**
  * Everything whose spelling depends on where the log lives.
@@ -304,6 +269,8 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
       ddl: `CREATE TABLE IF NOT EXISTS ${t("meta")} (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
       read: `SELECT value FROM ${t("meta")} WHERE key = 'schema'`,
       write: `INSERT OR REPLACE INTO ${t("meta")} (key, value) VALUES ('schema', ?)`,
+      readGuard: `SELECT value FROM ${t("meta")} WHERE key = 'guard'`,
+      writeGuard: `INSERT OR REPLACE INTO ${t("meta")} (key, value) VALUES ('guard', ?)`,
     },
     migrate: async (driver) => {
       await ladder(driver, rungs.log, logSteps);

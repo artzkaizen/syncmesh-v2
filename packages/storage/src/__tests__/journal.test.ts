@@ -221,9 +221,10 @@ describe("a write split between the two files' commits", () => {
     const files = scratch();
     try {
       const first = await openPair(files.log, schemaName(tables));
-      const a = (await openStores(first, { tables })).unwrap();
-      const b = (await openStores(first, { tables })).unwrap();
-      // one statement in each file, through each store's own journaling driver
+      const a = (await openStores(first, { tables, strict: false })).unwrap();
+      const b = (await openStores(first, { tables, strict: false })).unwrap();
+      // one statement in each file, through each store's own journaling driver: raw writes, so
+      // the strict guard (U5) is off for the app's table
       const both = (stores: typeof a, id: string) =>
         stores.driver.transaction?.(async () => {
           await stores.driver.run(`INSERT INTO notes (id, body) VALUES (?, ?)`, [id, id]);
@@ -238,7 +239,7 @@ describe("a write split between the two files' commits", () => {
       restore();
 
       const driver = await openPair(files.log, schemaName(tables));
-      (await openStores(driver, { tables })).unwrap();
+      (await openStores(driver, { tables, strict: false })).unwrap();
       const keys = await driver.all(
         `SELECT key FROM syncmesh.meta WHERE key LIKE 'x%' ORDER BY key`,
       );
@@ -253,8 +254,8 @@ describe("a write split between the two files' commits", () => {
     const files = scratch();
     try {
       const first = await openPair(files.log, schemaName(tables));
-      const a = (await openStores(first, { tables })).unwrap();
-      const b = (await openStores(first, { tables })).unwrap();
+      const a = (await openStores(first, { tables, strict: false })).unwrap();
+      const b = (await openStores(first, { tables, strict: false })).unwrap();
       const restore = snapshot(files.log);
       // one SQLite transaction, opened by `a`, whose log half goes through `b`
       await a.driver.transaction?.(async () => {
@@ -265,7 +266,7 @@ describe("a write split between the two files' commits", () => {
       restore();
 
       const driver = await openPair(files.log, schemaName(tables));
-      (await openStores(driver, { tables })).unwrap();
+      (await openStores(driver, { tables, strict: false })).unwrap();
       const keys = await driver.all(`SELECT key FROM syncmesh.meta WHERE key = 'x1'`);
       expect(keys).toEqual([["x1"]]);
       await driver.close?.();
@@ -278,7 +279,7 @@ describe("a write split between the two files' commits", () => {
     const files = scratch();
     try {
       const connection = await openPair(files.log, schemaName(tables));
-      const a = (await openStores(connection, { tables })).unwrap();
+      const a = (await openStores(connection, { tables, strict: false })).unwrap();
       await a.driver.transaction?.(async () => {
         await a.driver.run(`INSERT INTO notes (id, body) VALUES (?, ?)`, ["x1", "x1"]);
         await a.driver.run(`INSERT INTO syncmesh.meta (key, value) VALUES (?, ?)`, ["x1", "x1"]);
@@ -292,7 +293,7 @@ describe("a write split between the two files' commits", () => {
         release = resolve;
       });
       const inFlight = inTransaction(a.driver, () => held);
-      const second = openStores(connection, { tables });
+      const second = openStores(connection, { tables, strict: false });
       // let the second open reach the journal while the first transaction is still open
       await Bun.sleep(Temporal.Duration.from({ milliseconds: 20 }).total("milliseconds"));
       release();
