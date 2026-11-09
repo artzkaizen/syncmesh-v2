@@ -116,6 +116,31 @@ describe("digests on the wire", () => {
     link.close();
   });
 
+  test("a window compares nothing: each device under it holds its own subset (O13)", async () => {
+    const x = peer(40, "acct_x");
+    const y = peer(80, "acct_y");
+    (await write(x, "n1", "one")).unwrap();
+    await y.engine.installSnapshot(x.engine.snapshot());
+    // x holds a row y does not, at the same cursors: inside a window that is what windows do
+    const source = x.engine.rowRecords(NOTES, [key("n1")])[0];
+    // SAFETY: the write above put this record in x's state
+    const record = (source as NonNullable<typeof source>).record;
+    await x.engine.repairRows(NOTES, [{ key: key("older"), record }]);
+
+    const answer = (interest: Interest) => ({
+      scope: interestKey(interest),
+      at: y.engine.coverage().synced,
+      digests: tableNames(y.engine.digest(interest)),
+      ahead: y.engine.ahead(),
+    });
+    const slice: Interest = { partitions: [ACME] };
+    const windowed: Interest = { partitions: [ACME], window: { newest: 1 } };
+    expect(divergenceAgainst(x.engine, slice, interestKey(slice), answer(slice))).toEqual([NOTES]);
+    expect(
+      divergenceAgainst(x.engine, windowed, interestKey(windowed), answer(windowed)),
+    ).toBeUndefined();
+  });
+
   test("the same slice named the same way is what makes a comparison happen at all", async () => {
     const x = peer(40, "acct_x");
     const y = peer(80, "acct_y");

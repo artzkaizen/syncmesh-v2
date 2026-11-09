@@ -4,7 +4,18 @@ import { parsePartitionKey } from "@syncmesh/kernel";
 import { NO_ROLES, evaluate, gt, isIn, lt, ne } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
-import { EVERYTHING, interestKey, matchesInterest, narrows } from "../interest.js";
+import {
+  EVERYTHING,
+  entitledInterest,
+  interestFrom,
+  interestKey,
+  interestText,
+  matchesInterest,
+  narrows,
+  sameInterest,
+  scopeFrom,
+  scopeText,
+} from "../interest.js";
 import { CREATE, N1, PEER_A, hlcAt, row, seq, table } from "./fixtures.js";
 
 const JOBS = table("jobs");
@@ -107,5 +118,90 @@ describe("an interest is partitions and nothing finer (book ch. 3)", () => {
     expect(matchesInterest({ partitions: [ACME] }, unpinnedOf(inserted(1)))).toBe(true);
     expect(matchesInterest({ partitions: [] }, unpinnedOf(inserted(1)))).toBe(true);
     expect(matchesInterest(EVERYTHING, unpinnedOf(inserted(1)))).toBe(true);
+  });
+});
+
+describe("a snapshot window is part of the interest (O13)", () => {
+  const acme = (newest?: number) =>
+    newest === undefined ? { partitions: [ACME] } : { partitions: [ACME], window: { newest } };
+
+  test("a smaller window narrows; dropping or growing one widens", () => {
+    expect(narrows(acme(50), acme(100))).toBe(true);
+    expect(narrows(acme(100), acme(100))).toBe(true);
+    expect(narrows(acme(50), acme())).toBe(true);
+    // the rows outside the old window were never sent: a cursor scoped to it skips them for good
+    expect(narrows(acme(), acme(50))).toBe(false);
+    expect(narrows(acme(100), acme(50))).toBe(false);
+    expect(narrows(undefined, { window: { newest: 50 } })).toBe(false);
+    expect(narrows(EVERYTHING, { window: { newest: 50 } })).toBe(false);
+  });
+
+  test("its text is one spelling, whatever order the app wrote it in", () => {
+    const spelled = { window: { newest: 50 }, partitions: [ACME] };
+    expect(interestText(spelled)).toBe('{"partitions":["org:acme"],"window":{"newest":50}}');
+    expect(interestFrom(interestText(spelled))).toEqual(acme(50));
+  });
+
+  test("a window this build cannot read is no window, the wider request", () => {
+    expect(interestFrom('{"partitions":["org:acme"],"window":{"newest":0}}')).toEqual(acme());
+    expect(interestFrom('{"window":"lots"}')).toEqual({});
+  });
+
+  test("two windows are two subscriptions, and two scopes", () => {
+    expect(interestKey(acme(50))).not.toBe(interestKey(acme(100)));
+    expect(interestKey(acme(50))).not.toBe(interestKey(acme()));
+    expect(sameInterest(acme(50), { window: { newest: 50 }, partitions: [ACME] })).toBe(true);
+    expect(sameInterest(acme(50), acme())).toBe(false);
+  });
+
+  test("a grant cuts the partitions and keeps the window, or the scope would claim more", () => {
+    expect(entitledInterest(acme(50), [ACME, GLOBEX])).toEqual(acme(50));
+    expect(entitledInterest({ window: { newest: 50 } }, [ACME])).toEqual(acme(50));
+    const scope = scopeText(acme(50), "clinic:a");
+    expect(scope).toBe(
+      '{"partitions":["org:acme"],"window":{"newest":50},"entitlement":"clinic:a"}',
+    );
+    expect(scopeFrom(scope)).toEqual({ interest: acme(50), entitlement: "clinic:a" });
+    expect(scopeFrom(scopeText({ window: { newest: 5 } }, "clinic:a")).interest).toEqual({
+      window: { newest: 5 },
+    });
+  });
+
+  test("a window an app built that is not a positive whole number is no window anywhere", () => {
+    for (const newest of [0, -3, 2.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      const odd = acme(newest);
+      // a wrong `true` here would keep a cursor that never saw the rows outside a real window
+      expect(narrows(odd, acme(50))).toBe(false);
+      expect(narrows(acme(50), odd)).toBe(true);
+      expect(interestText(odd)).toBe(interestText(acme()));
+      expect(sameInterest(odd, acme())).toBe(true);
+      expect(entitledInterest(odd, [ACME])).toEqual(acme());
+    }
+  });
+});
+
+describe("text that is not an interest reads as the Rust reads it (O13)", () => {
+  test("JSON that is no object is no interest", () => {
+    for (const text of ["5", "[]", '"ab"', "null", "true"])
+      expect(interestFrom(text)).toBeUndefined();
+  });
+
+  test("partitions that are not a list are no interest; null partitions are all of them", () => {
+    expect(interestFrom('{"partitions":"x"}')).toBeUndefined();
+    expect(interestFrom('{"partitions":null}')).toEqual({});
+  });
+
+  test("a list keeps only its partition keys", () => {
+    expect(interestFrom('{"partitions":["org:acme",5,"not a key",null]}')).toEqual({
+      partitions: [ACME],
+    });
+  });
+
+  test("a scope's entitlement is read even beside an interest that is not one", () => {
+    expect(scopeFrom('{"partitions":"x","entitlement":"clinic:a"}')).toEqual({
+      interest: undefined,
+      entitlement: "clinic:a",
+    });
+    expect(scopeFrom('{"entitlement":5}')).toEqual({ interest: {}, entitlement: undefined });
   });
 });

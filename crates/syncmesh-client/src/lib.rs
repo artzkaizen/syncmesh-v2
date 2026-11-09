@@ -62,7 +62,10 @@ pub use engine::{
 };
 pub use grants::{GrantCache, GrantRegistry};
 pub use holdback::Holdback;
-pub use interest::{Interest, interest_from, interest_text, matches_interest, narrows};
+pub use interest::{
+    Interest, InterestWindow, interest_from, interest_text, matches_interest, narrows,
+    same_interest, scope_from, scope_text, window_rows,
+};
 pub use join::{
     JoinExchange, JoinOptions, JoinOutcome, JoinPolicy, JoinStep, Settled, SnapshotInstalled,
     Ticket, Withheld,

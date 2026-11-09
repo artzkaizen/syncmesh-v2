@@ -87,6 +87,8 @@ export async function join(
     sent: out.sent,
     synced: pairs(coverage.synced),
     floor: pairs(coverage.floor),
+    // the slice the adopted cursors are true for: a window travels with them (D23, O13)
+    scope: coverage.scope ?? null,
     rows: [...(engine.state().get(table("notes"))?.keys() ?? [])].map(String).sort(),
     settled: outcomeOf(outcomes[0]),
   };
