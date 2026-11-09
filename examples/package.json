@@ -21,6 +21,7 @@
   "scripts": {
     "device": "bun --conditions=@syncmesh/source src/embedded/device.ts",
     "fleet": "docker compose -f src/fleet/compose.yaml up --build",
+    "fleet:check": "bun --conditions=@syncmesh/source src/fleet/check.ts",
     "rounds": "bun --conditions=@syncmesh/source src/rounds/device.ts",
     "server": "bun --conditions=@syncmesh/source src/embedded/server.ts"
   },

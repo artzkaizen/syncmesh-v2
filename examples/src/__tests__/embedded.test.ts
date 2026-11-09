@@ -1,45 +1,11 @@
-import type { PeerId } from "@syncmesh/kernel";
-
-import { createClient, sqlite } from "@syncmesh/orpc";
-import { relayTransport, webSocketDial } from "@syncmesh/relay";
-import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { openBackend } from "../embedded/backend.js";
-import { identityNamed } from "../identity.js";
-import { INSTANCE, INVITE, notes, notesSchema } from "../notes.js";
-
-const until = async (check: () => boolean | Promise<boolean>, ms = 8000): Promise<boolean> => {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (await check()) return true;
-    await Bun.sleep(20);
-  }
-  return check();
-};
-
-/** A phone as `device.ts` builds one: its own SQLite file, its own key, the issuer's id as config. */
-const phone = async (name: string, dialing: string, issuer: PeerId, dir: string) => {
-  const client = createClient({
-    schema: notesSchema(),
-    identity: identityNamed(`device:${name}`),
-    storage: sqlite({ driver: bunSqliteDriver(join(dir, `device-${name}.db`)) }),
-    trust: { issuer },
-    transports: [relayTransport({ dial: webSocketDial(dialing), reconnectMs: 20 })],
-  });
-  await client.$ready; // `$mesh` throws until the mesh has opened
-  return client.$mesh;
-};
-
-/** Asks for a grant with the invite and waits until the phone may write. */
-const admitted = async (mesh: Awaited<ReturnType<typeof phone>>): Promise<boolean> => {
-  await mesh.ready();
-  mesh.requestGrant(INVITE);
-  return until(() => mesh.can("notes.insert", undefined, INSTANCE));
-};
+import { INSTANCE, notes } from "../notes.js";
+import { admitted, phone, until } from "../phone.js";
 
 describe("the relay inside the backend you already run (D09-A, E25)", () => {
   test("a phone's write lands in the backend's own table, read with plain Drizzle", async () => {
