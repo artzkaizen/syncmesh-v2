@@ -31,10 +31,11 @@ export function createRetained(
   report: LinkReport,
   interest: Interest | undefined,
   /**
-   * Dial the room: now, because this device holds the floor; or `later`, after the link's backoff,
-   * because something new is waiting to be handed over.
+   * Dial the room: `now`, because this device holds the floor; or `later`, after the link's
+   * backoff, because something new is waiting to be handed over. `refused` says the room refused
+   * a join it greeted, so the backoff its hello reset is put back (`Redial.refused`).
    */
-  dial: (later?: boolean) => void,
+  dial: (when: "now" | "later" | "refused") => void,
 ) {
   let watching: (() => void) | undefined;
   let context: TransportContext | undefined;
@@ -55,7 +56,7 @@ export function createRetained(
       if (belowRelayFloor(next(), floor).size > 0) return;
       release();
       ctx.rejoins?.relayCleared(name);
-      dial();
+      dial("now");
     };
     /**
      * A write, or one carried in from a neighbour, while the room still refuses: it is handed
@@ -67,7 +68,7 @@ export function createRetained(
     const fresh = () => {
       if (watching === undefined) return;
       release();
-      dial(true);
+      dial("later");
     };
     const offs = [
       ctx.engine.onFoldBatch((batch) => {
@@ -95,6 +96,7 @@ export function createRetained(
       return {
         ...hooks,
         onRefused: (code, floor) => {
+          if (code === "retention") dial("refused");
           if (code === "retention" && floor !== undefined) refused(ctx, floor);
           hooks.onRefused(code, floor);
         },

@@ -91,8 +91,8 @@ export class RelayLink {
     this.name = options.name ?? "relay";
     this.versions = options.versions ?? RELAY_PROTOCOL_VERSIONS;
     this.report = createLinkReport(this.name, () => this.ctx?.now?.() ?? Temporal.Now.instant());
-    this.retained = createRetained(this.name, this.report, options.interest, (later) =>
-      later ? this.redial.again() : this.wake(),
+    this.retained = createRetained(this.name, this.report, options.interest, (when) =>
+      when === "now" ? this.wake() : when === "later" ? this.redial.again() : this.redial.refused(),
     );
     this.redial = createRedial(
       omitUndefined({
@@ -167,10 +167,8 @@ export class RelayLink {
     const { cursors, repaging } = joinPosition(this.ctx, wanted, this.reentitled);
     this.repaging = repaging;
     this.joined = { sent: wanted, entitled: entitledScope(this.ctx, this.options.interest) };
-    const proof =
-      nonce === undefined
-        ? undefined
-        : proveJoin(identity, nonce, joinCore(this.versions, identity.peerId, cursors, wanted));
+    const core = joinCore(this.versions, identity.peerId, cursors, wanted);
+    const proof = nonce === undefined ? undefined : proveJoin(identity, nonce, core);
     this.sendSafe(joinFrame(this.versions, identity.peerId, cursors, wanted, proof));
     for (const wire of grants.allWires()) this.sendSafe(grantFrame(wire));
     // behind the join and its grants, so a blob request is answered under the seat they make
@@ -252,7 +250,6 @@ export class RelayLink {
         this.readiness.hello();
       },
       onRefused: (code) => {
-        if (code === "retention") this.redial.refused();
         if (code !== "version") return;
         this.report.refused(said.REFUSED);
         this.fatal = true;
