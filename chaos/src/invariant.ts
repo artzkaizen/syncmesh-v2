@@ -67,10 +67,40 @@ function refusalsFrom(entries: readonly Entry[]): ReadonlyMap<string, string> {
   return refusals;
 }
 
-/** Every acknowledged event against every device. */
+/**
+ * Why a device may lack what `author` wrote: the typed refusal it was given, or no way left from
+ * the author to it once the relay serves nobody it refused (`reach.ts`). `undefined` when neither.
+ */
+const excuse = (
+  refusals: ReadonlyMap<string, string>,
+  why: Excuses,
+  entry: { readonly device: string; readonly author: string; readonly seqNum: number },
+  device: string,
+): string | undefined => {
+  const told = refusals.get(device);
+  if (told !== undefined) return told;
+  if (!why.reaches(entry.device, device))
+    return `cut off: every way from ${entry.device} runs through a device the relay refused`;
+  if (why.stateOnly(device, entry.author, entry.seqNum))
+    return `state only: ${entry.device}'s run from here reaches this device in no log, and nothing that carries state does (gaps U51)`;
+  return undefined;
+};
+
+/** What `reach.ts` knows that a device's own holding cannot say. */
+export interface Excuses {
+  /** Whether a write by the first device could reach the second at all. */
+  readonly reaches: (from: string, to: string) => boolean;
+  /** Whether what the device lacks of an author's run, up to a sequence, survives only as state. */
+  readonly stateOnly: (device: string, author: string, seq: number) => boolean;
+}
+
+const NO_EXCUSES = { reaches: () => true, stateOnly: () => false } satisfies Excuses;
+
+/** Every acknowledged event against every device that could ever have been sent it. */
 export function checkHeld(
   entries: readonly Entry[],
   holdings: readonly Holding[],
+  why: Excuses = NO_EXCUSES,
 ): InvariantReport {
   const floors = floorsFrom(entries);
   const refusals = refusalsFrom(entries);
@@ -90,7 +120,7 @@ export function checkHeld(
         covered += 1;
         continue;
       }
-      const refusal = refusals.get(holding.device);
+      const refusal = excuse(refusals, why, entry, holding.device);
       if (refusal !== undefined && cursor < entry.seqNum) {
         refused.push({ device: holding.device, eventId: entry.eventId, refusal });
         continue;

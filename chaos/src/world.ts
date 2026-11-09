@@ -1,9 +1,8 @@
-import type { RelayDial } from "@syncmesh/relay";
 import type { Transport } from "@syncmesh/transport";
 
 import { bleTransport } from "@syncmesh/ble";
 import { virtualAir, type VirtualAir } from "@syncmesh/ble/testing";
-import { sqlite } from "@syncmesh/client";
+import { sqlite, type Mesh } from "@syncmesh/client";
 import { createMesh } from "@syncmesh/client/internal";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { relayTransport, startRelay } from "@syncmesh/relay";
@@ -14,6 +13,7 @@ import { createIdentity, issueGrant } from "@syncmesh/wire";
 
 import type { Ledger } from "./ledger.js";
 
+import { cuttableDial } from "./dial.js";
 import { short } from "./ledger.js";
 import { chance } from "./random.js";
 import { chaosSchema, NOTE, WORKSPACE } from "./schema.js";
@@ -72,87 +72,65 @@ export interface WorldOptions {
   readonly random: () => number;
 }
 
-/** The close reasons the relay sends with a typed refusal (`connection.ts`'s `refuse`). */
-const REFUSALS = new Set(["retention", "version"]);
-
 /**
- * `webSocketDial`, with the close reason kept.
- *
- * The relay refuses a joiner below its retention floor with a typed `error` frame and closes
- * the socket with the code as its reason. On a sealed link the frame is not readable from here,
- * and the library's dial drops the reason, so the transport reconnects without anything above it
- * learning it was refused. This copy differs only in handing that reason to `onRefused`, so the
- * ledger can record the refusal the device was given.
+ * Everything one device says about itself, into the ledger: what each medium says about its own
+ * links, what it quarantined, what it folded and from where, and the relay's `retention` refusal
+ * as the device itself reports it — a `$recovery` issue (gaps U30).
  */
-const reasonDial = (url: string, onRefused: (code: string) => void) => (): Promise<RelayDial> =>
-  new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
-    const frames = new Set<(frame: Uint8Array) => void>();
-    const closes = new Set<() => void>();
-    const early: Uint8Array[] = [];
-    let opened = false;
-    ws.onopen = () => {
-      opened = true;
-      resolve({
-        send: (frame) => {
-          if (ws.readyState !== WebSocket.OPEN) throw new Error("relay socket is not open");
-          // SAFETY: every frame reaching here was built by `@syncmesh/relay` over a plain `ArrayBuffer`
-          ws.send(frame as Uint8Array<ArrayBuffer>);
-        },
-        onFrame: (cb) => {
-          frames.add(cb);
-          for (const bytes of early.splice(0)) cb(bytes);
-          return () => void frames.delete(cb);
-        },
-        onClose: (cb) => {
-          closes.add(cb);
-          return () => void closes.delete(cb);
-        },
-        close: () => ws.close(),
+function report(mesh: Mesh, name: string, ledger: Ledger): void {
+  // what each medium says about its own links — a refusal at the door, a session replaced
+  mesh.transports.onLinkEvent((event) =>
+    ledger.write({
+      kind: "medium",
+      device: name,
+      transport: event.transport,
+      event: event.kind,
+      peer: event.peer === undefined ? "" : short(event.peer),
+      why: event.why ?? "",
+    }),
+  );
+  // the relay's `retention` refusal as the device itself reports it: a `$recovery` issue
+  // (gaps U30), raised whether or not the room also closed the socket with the code
+  const told = new Set<string>();
+  mesh.recovery.onBelowFloor(() => {
+    for (const issue of mesh.recovery.belowFloor()) {
+      if (issue.reason !== "retention" || told.has(issue.relay)) continue;
+      told.add(issue.relay);
+      ledger.write({
+        kind: "refused",
+        device: name,
+        transport: issue.relay,
+        code: issue.reason,
+        message: issue.message,
       });
-    };
-    ws.onerror = () => {
-      if (!opened) reject(new Error(`could not reach ${url}`));
-    };
-    ws.onmessage = (message) => {
-      if (!(message.data instanceof ArrayBuffer)) return;
-      const bytes = new Uint8Array(message.data);
-      if (frames.size === 0) early.push(bytes);
-      else for (const cb of frames) cb(bytes);
-    };
-    ws.onclose = (event) => {
-      if (REFUSALS.has(event.reason)) onRefused(event.reason);
-      for (const cb of closes) cb();
-    };
+    }
   });
-
-/**
- * A relay link that can be cut.
- *
- * `relayTransport` reconnects on its own, which is the behaviour under test — so taking the link
- * down means refusing the dial rather than reaching inside the transport. The socket already open
- * is closed too, or the transport keeps using a link the schedule believes is gone.
- */
-const cuttableDial = (url: string, onRefused: (code: string) => void) => {
-  const open = new Set<{ readonly close: () => void }>();
-  let up = true;
-  const dial = async (): Promise<RelayDial> => {
-    if (!up) throw new Error("relay unreachable");
-    const dialed = await reasonDial(url, onRefused)();
-    open.add(dialed);
-    return dialed;
-  };
-  return {
-    dial,
-    set: (next: boolean) => {
-      up = next;
-      if (next) return;
-      for (const dialed of open) dialed.close();
-      open.clear();
-    },
-  };
-};
+  mesh.engine.onQuarantine(({ event, reason }) =>
+    ledger.write({
+      kind: "quarantined",
+      device: name,
+      author: event.peerId.slice(0, 8),
+      seqNum: event.seqNum,
+      reason: reason.message,
+    }),
+  );
+  mesh.engine.onFoldBatch((batch) => {
+    ledger.write({
+      kind: "folded",
+      device: name,
+      count: batch.eventCount,
+      source: batch.source,
+    });
+    // state taken without its events: what the device now claims, for the invariant to read
+    if (batch.source === "snapshot")
+      ledger.write({
+        kind: "covered",
+        device: name,
+        source: batch.source,
+        cursors: Object.fromEntries(mesh.engine.coverage().synced),
+      });
+  });
+}
 
 export async function createWorld(options: WorldOptions) {
   const { devices: wirings, switches, ledger, dir, random } = options;
@@ -200,6 +178,18 @@ export async function createWorld(options: WorldOptions) {
           }),
         );
 
+      /**
+       * What a phone's reachability callback is: the network came back, so look at the links now.
+       * A run that restored a link and told nobody waited out the relay's redial backoff — up to
+       * 30 s, ten times the heal — and called the device that had not dialled yet diverged (seed
+       * 22, `--retention`: a relay-only device's last dial before heal was at 6.7 s and its next
+       * was due at 10.7 s, after the run had ended). `@syncmesh/react-native` ships this knock as
+       * `reachability()`; the schedule knocks whenever it gives a device its relay back.
+       */
+      const knocked = new Set<() => void>();
+      const knock = () => {
+        for (const wake of knocked) wake();
+      };
       const driver = bunSqliteDriver(`${dir}/${name}.db`);
       // only the issuer's own device can mint, and only under `grants: "fault"` is it a device
       const trust = omitUndefined({
@@ -213,47 +203,19 @@ export async function createWorld(options: WorldOptions) {
           storage: sqlite({ driver }),
           trust,
           transports,
+          knocks: [
+            (wake) => {
+              const once = () => wake();
+              knocked.add(once);
+              return () => void knocked.delete(once);
+            },
+          ],
         })
       ).unwrap();
 
-      // what each medium says about its own links — a refusal at the door, a session replaced
-      mesh.transports.onLinkEvent((event) =>
-        ledger.write({
-          kind: "medium",
-          device: name,
-          transport: event.transport,
-          event: event.kind,
-          peer: event.peer === undefined ? "" : short(event.peer),
-          why: event.why ?? "",
-        }),
-      );
-      mesh.engine.onQuarantine(({ event, reason }) =>
-        ledger.write({
-          kind: "quarantined",
-          device: name,
-          author: event.peerId.slice(0, 8),
-          seqNum: event.seqNum,
-          reason: reason.message,
-        }),
-      );
-      mesh.engine.onFoldBatch((batch) => {
-        ledger.write({
-          kind: "folded",
-          device: name,
-          count: batch.eventCount,
-          source: batch.source,
-        });
-        // state taken without its events: what the device now claims, for the invariant to read
-        if (batch.source === "snapshot")
-          ledger.write({
-            kind: "covered",
-            device: name,
-            source: batch.source,
-            cursors: Object.fromEntries(mesh.engine.coverage().synced),
-          });
-      });
+      report(mesh, name, ledger);
 
-      return { name, index, identity, mesh, link, driver, wiring, partition };
+      return { name, index, identity, mesh, link, driver, wiring, partition, knock };
     }),
   );
 

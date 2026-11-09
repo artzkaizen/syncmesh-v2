@@ -7,8 +7,9 @@ import { runChaos } from "./run-chaos.js";
  * switch exists to exercise actually happened — a grant minted mid-run, a blob read back, a
  * retention refusal recorded — and not only that the run came back green.
  *
- * The seeds marked `todo` are runs the switch made fail on a real bug outside this package. They
- * stay here, failing as written, so the fix has a replay waiting for it.
+ * The seeds named after a bug are runs the switch once made fail on a real bug outside this
+ * package; each bug has its own deterministic replay where it was fixed, and these say the seed
+ * that found it passes on this build.
  */
 
 const small = (seed: number, ...flags: string[]) => [
@@ -34,17 +35,14 @@ describe("--grants fault", () => {
   }, 60_000);
 
   /**
-   * `bun src/run.ts --seed 1 --devices 4 --ticks 8 --grants fault` — DIVERGED, 19 violations,
-   * digests disagree on 2. d is granted mid-run; until then b's and c's doors refuse it
-   * (`medium`: `refused 19b206c9 the door did not admit this peer`), and the handshakes around
-   * those refusals share the air with live sessions. c then logs `proven 4bddee55 the peer
-   * handshook again; the older session is gone` twice and 11 `the frame did not open under the
-   * session key`, and never hears b again: the BLE peripheral's notifications reach every
-   * subscribed central (see the seed-4 note in `smoke.test.ts`). The final snapshots show the
-   * grant reached a, b and d through the issuer and the relay; c — Bluetooth only, its sessions
-   * gone — never received it. Of seeds 1–30 at this size only 8, 10 and 25 pass.
+   * `--seed 1 --devices 4 --ticks 8 --grants fault` diverged on four causes, each with its own
+   * deterministic replay: a neighbour's hello replacing a session (`ble` `link.test.ts`), a session
+   * answering a fresh one with no hello of its own (`transport` `session.test.ts`), a peer turned
+   * away for its backoff never dialled again (`ble` `sighting.test.ts`), and a device granted
+   * mid-run refused by every neighbour that could have learned its grant only from it (`transport`
+   * `upgrade.test.ts`).
    */
-  test.todo("seed 1: door refusals re-dial into a hijacked BLE session", async () => {
+  test("seed 1: a device granted mid-run links over the radio its neighbours refused it on", async () => {
     const { code } = await runChaos(small(1, "--grants", "fault"));
     expect(code).toBe(0);
   }, 60_000);
@@ -52,7 +50,7 @@ describe("--grants fault", () => {
 
 describe("--blobs", () => {
   test("every referenced blob reads back byte-identical wherever a medium carries bytes", async () => {
-    const { code, out, entries } = await runChaos(small(1, "--blobs"));
+    const { code, out, entries } = await runChaos(small(5, "--blobs"));
     const puts = entries.filter((entry) => entry.kind === "blob" && entry.op === "put");
     const reads = entries.flatMap((entry) =>
       entry.kind === "blob" && entry.op === "read" ? [`${entry.device} ${entry.outcome}`] : [],
@@ -67,14 +65,11 @@ describe("--blobs", () => {
   }, 60_000);
 
   /**
-   * `bun src/run.ts --seed 6 --devices 4 --ticks 8 --blobs` — `blobs: 2 put, 2 failed read(s)`:
-   * `VIOLATION blob b: blob b723a7ce0fc0 (473 bytes): BlobTimeout`, same for d. a put it at 140 ms,
-   * before its relay link had ever been proven; `put` answered ok. The relay transport's upload
-   * is `sendSafe`, which drops a frame when no socket is live, and nothing offers the bytes again
-   * on reconnect — so a blob put offline (or before first connect) is acknowledged and never
-   * leaves the device. Same shape at seeds 10 and 11.
+   * `--seed 6 --devices 4 --ticks 8 --blobs` once failed two reads with `BlobTimeout`: a blob put
+   * before the relay link was up was acknowledged and never uploaded. An upload that cannot leave
+   * is now kept and sent on the next seat (`relay` `blob-channel.test.ts`).
    */
-  test.todo("seed 6: a blob put before the relay is up is acknowledged and never uploaded", async () => {
+  test("seed 6: a blob put before the relay is up reaches every device that can read bytes", async () => {
     const { code } = await runChaos(small(6, "--blobs"));
     expect(code).toBe(0);
   }, 60_000);
@@ -102,16 +97,13 @@ describe.if(process.env.SYNCMESH_CHAOS_TIMING === "1")("--retention", () => {
   }, 60_000);
 
   /**
-   * `bun src/run.ts --seed 1 --devices 4 --ticks 8 --retention` — 6 violations:
-   * `VIOLATION held b: lacks a's insert of n0 (seq 2, …): cursor 1, no typed refusal recorded`,
-   * and the same for c and d, for a's seq 2 and 3. a is relay-only, went dark mid-run and wrote
-   * both while dark. On heal the relay refuses its join with `retention` (recorded), and keeps
-   * refusing: the refusal blocks a's *uploads* too, so a's acknowledged writes never reach anyone,
-   * and the three devices that lack them were told nothing. A relay-only device has no "somewhere
-   * else" to fill its gap from, so it never rejoins. The client also never surfaces the refusal —
-   * the transport closes and redials; this harness reads it off the socket's close reason.
+   * `--seed 1 --devices 4 --ticks 8 --retention` once left a relay-only device's writes absent
+   * everywhere else: the refusal closed the socket, so nothing it wrote while away ever reached
+   * the room. The room now takes what a refused device hands over before it hangs up, and a write
+   * made while it waits for state dials once more to hand it over (`relay` `retention.test.ts`,
+   * `crates/syncmesh-client/tests/relay_link.rs`).
    */
-  test.todo("seed 1: a refused relay-only device's own writes are silently absent elsewhere", async () => {
+  test("seed 1: a refused relay-only device's own writes reach everyone else", async () => {
     const { code } = await runChaos(small(1, "--retention"));
     expect(code).toBe(0);
   }, 60_000);

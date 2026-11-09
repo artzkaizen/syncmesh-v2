@@ -66,6 +66,8 @@ const setRelay = (device: Device, up: boolean, why: string, ledger: Ledger, stat
   state.relayUp.set(device.name, up);
   device.link.set(up);
   ledger.write({ kind: "link", device: device.name, transport: "relay", up, why });
+  // the network came back: what a phone's reachability callback tells the mesh (`world.ts`)
+  if (up) device.knock();
 };
 
 const setReach = (

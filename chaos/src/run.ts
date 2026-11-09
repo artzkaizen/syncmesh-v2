@@ -10,6 +10,7 @@ import { key, table } from "./cells.js";
 import { checkDigests, checkHeld, renderInvariant, type Holding } from "./invariant.js";
 import { createLedger, short } from "./ledger.js";
 import { seeded } from "./random.js";
+import { reachOver, stateOnlyOver } from "./reach.js";
 import { SMALL, runPlan, type Plan } from "./schedule.js";
 import { NOTE } from "./schema.js";
 import { createWorld } from "./world.js";
@@ -224,15 +225,29 @@ const main = async () => {
 
     // the durability invariant, from each engine's own log and cursors rather than its rows
     const holding = await holdings(world);
-    const invariant = checkHeld(ledger.entries(), holding);
+    const told = new Set(
+      ledger.entries().flatMap((entry) => (entry.kind === "refused" ? [entry.device] : [])),
+    );
+    const wirings = new Map(world.devices.map((device) => [device.name, device.wiring]));
+    const reaches = reachOver(wirings, told);
+    const stateOnly = stateOnlyOver(wirings, told, holding);
+    const invariant = checkHeld(ledger.entries(), holding, { reaches, stateOnly });
     const refused = new Set(invariant.refused.map((refusal) => refusal.device));
     const digests = checkDigests(holding, refused);
     for (const violation of [...invariant.violations, ...digests]) ledger.write(violation);
 
     // a device told by a typed refusal that it would not be served is reported as refused, not
     // as diverged: what the oracle demands of it is that it was told, and the invariant checks that
-    const converging: Held = new Map([...held].filter(([device]) => !refused.has(device)));
-    const report = analyze(ledger.entries(), converging);
+    // one cut off only from some writes is still held to the rest, by `analyze`'s own reach
+    const converging: Held = new Map(
+      [...held].filter(([device]) => !(refused.has(device) && told.has(device))),
+    );
+    const report = analyze(
+      ledger.entries(),
+      converging,
+      (write, device) =>
+        reaches(write.device, device) && !stateOnly(device, write.author, write.seqNum),
+    );
     const text = [
       render(report, ledger.entries()),
       renderInvariant(invariant, digests),
