@@ -9,6 +9,7 @@ import { parseActionId, parseAdapterId, parseLineageId } from "../doc.js";
 import { getRecord, isVisible } from "../index.js";
 import {
   GENESIS_RULE,
+  LINEAGE_RULE,
   SETTLED_RULE,
   cellGeneses,
   parseLineageCells,
@@ -98,7 +99,7 @@ describe("applyChange — a doc change", () => {
     ]);
     const record = getRecord(state, NOTES, N1);
     expect(record?.cells.get(CONTENT)?.value).toEqual([
-      GENESIS_RULE,
+      LINEAGE_RULE,
       {
         [lineage("a")]: [null, 2, 0, PEER_B],
         [lineage("b")]: [lineage("a"), 3, 0, PEER_A],
@@ -213,7 +214,7 @@ describe("lineage — the first genesis wins, as a tree (RFC-0023 §16.1)", () =
       [lineage("c")]: [null, -1, 0, PEER_A],
       "not a lineage": [null, 1, 0, PEER_A],
     };
-    expect(cellGeneses([GENESIS_RULE, mangled]).map((g) => g.lineage)).toEqual([lineage("a")]);
+    expect(cellGeneses([LINEAGE_RULE, mangled]).map((g) => g.lineage)).toEqual([lineage("a")]);
     expect(cellGeneses(lineage("a"))).toEqual([]);
   });
 
@@ -309,10 +310,16 @@ describe("a lineage cell kept outside events carries its rule's version (RFC-002
   });
 
   test("an untagged cell, the LWW rule's id or another version is refused, never read as the root", () => {
+    const anchor = [lineage("b"), 1, 0, PEER_A];
     for (const [value, version] of [
       [geneses, null],
       [lineage("a"), null],
-      [[2, geneses], 2],
+      // rules 1 and 2 kept an equivocated lineage's first copy: their cells are refused (U39)
+      [[GENESIS_RULE, geneses], GENESIS_RULE],
+      [[SETTLED_RULE, geneses, anchor], SETTLED_RULE],
+      [[LINEAGE_RULE, geneses, anchor, anchor], LINEAGE_RULE],
+      [[LINEAGE_RULE, geneses, "not an anchor"], LINEAGE_RULE],
+      [[4, geneses], 4],
     ] as const) {
       const refused = parseLineageCells([withCell(value)], DOCS);
       expect(refused.isErr() && refused.error.version).toBe(version);
@@ -347,7 +354,7 @@ describe("a settled anchor trims the lineage cell and keeps the walk (gaps U21)"
       expect(lineageAfter(order)).toBe(lineage("d"));
     }
     expect(cellAfter([a, d])).toEqual([
-      SETTLED_RULE,
+      LINEAGE_RULE,
       { [lineage("d")]: [lineage("c"), 20, 0, PEER_B] },
       [lineage("c"), 9, 0, PEER_A],
     ]);
@@ -367,7 +374,7 @@ describe("a settled anchor trims the lineage cell and keeps the walk (gaps U21)"
     expect(cellAfter([late, a, c, d])).toEqual(cellAfter([a, c, d, late]));
   });
 
-  test("of two anchors the later one holds, and a cell with none stays tagged 1", () => {
+  test("of two anchors the later one holds, and a cell with none is tagged 3 alone", () => {
     const a = genesis(lineage("a"), stamp(1, 0, PEER_A));
     const b = genesis(lineage("b"), stamp(4, 0, PEER_A), lineage("a"), {
       lineage: lineage("a"),
@@ -381,7 +388,7 @@ describe("a settled anchor trims the lineage cell and keeps the walk (gaps U21)"
     expect(cellAfter([c, b, a])).toEqual(cellAfter([a, b, c]));
     expect(lineageAfter([c, b])).toBe(lineage("c"));
     const plainCell = cellAfter([a]);
-    expect(Array.isArray(plainCell) && plainCell[0]).toBe(GENESIS_RULE);
+    expect(plainCell).toEqual([LINEAGE_RULE, { [lineage("a")]: [null, 1, 0, PEER_A] }]);
   });
 
   test("settleWalk names the deepest lineage replaced by the cutoff, never past a newer one", () => {
@@ -543,6 +550,139 @@ describe("a settled anchor trims the lineage cell and keeps the walk (gaps U21)"
         const forward = canonicalState(applyAll(all));
         expect(canonicalState(applyAll(shuffled))).toBe(forward);
         expect(canonicalState(applyAll([...shuffled, ...all]))).toBe(forward);
+        expect(lineageAfter(shuffled)).toBe(lineageAfter(all));
+      }),
+      { numRuns: 1000, seed: 39 },
+    );
+  });
+});
+
+describe("equivocation cannot split a document's winner (gaps U39, rule 3)", () => {
+  const spec = new Map([[NOTES, new Map([[CONTENT, "lineage" as const]])]]);
+  /** Every order of a short list. */
+  const permutations = <T>(xs: readonly T[]): T[][] =>
+    xs.length <= 1
+      ? [[...xs]]
+      : xs.flatMap((x, i) =>
+          permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest]),
+        );
+  /** The record two peers hold after each folded one part and they exchanged records. */
+  const joinedHalves = (left: readonly Stamped[], right: readonly Stamped[]) =>
+    [getRecord(applyAll(left), NOTES, N1), getRecord(applyAll(right), NOTES, N1)].reduce(
+      (state, record) =>
+        record === undefined ? state : mergeRecord(state, NOTES, N1, record, spec),
+      emptyState(),
+    );
+
+  // PEER_A signs two geneses of lineage `e` at one sequence: one stamped below the anchor `d`
+  // settles at (c's stamp, 4), one above it. Under rule 2 the order decided whether `e` survived
+  // (and won) or was dropped with its first copy
+  const c = genesis(lineage("c"), stamp(4, 0, PEER_B));
+  const early = genesis(lineage("e"), stamp(3, 0, PEER_A), lineage("c"));
+  const late = genesis(lineage("e"), stamp(6, 0, PEER_A), lineage("c"));
+  const d = genesis(lineage("d"), stamp(10, 0, PEER_B), lineage("c"), {
+    lineage: lineage("c"),
+    stamp: stamp(4, 0, PEER_B),
+  });
+
+  test("two copies of one lineage and an anchor between them: every meeting order, one cell", () => {
+    const forward = canonicalState(applyAll([c, early, late, d]));
+    for (const order of permutations([c, early, late, d])) {
+      expect(canonicalState(applyAll(order))).toBe(forward);
+      expect(lineageAfter(order)).toBe(lineage("e"));
+    }
+    // the later copy stands: `e` hangs under `c` at 6, above the anchor
+    const cell = readLineageCell(
+      getRecord(applyAll([d, early, late]), NOTES, N1)?.cells.get(CONTENT)?.value,
+    );
+    expect(cell.geneses.filter((g) => g.lineage === lineage("e"))).toEqual([
+      { lineage: lineage("e"), parent: lineage("c"), stamp: stamp(6, 0, PEER_A) },
+    ]);
+  });
+
+  test("peers that met the copies and the anchor in different batches join to one record", () => {
+    const all = [c, early, late, d];
+    const forward = plainState(applyAll(all));
+    for (const order of permutations(all))
+      for (let cut = 0; cut <= order.length; cut += 1) {
+        const joined = joinedHalves(order.slice(0, cut), order.slice(cut));
+        expect(plainState(joined)).toEqual(forward);
+        expect(docLineage(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineage("e"));
+      }
+  });
+
+  test("two copies with no anchor keep the later, so a copy moving the lineage moves it everywhere", () => {
+    const a = genesis(lineage("a"), stamp(1, 0, PEER_B));
+    // the same lineage signed once as a's child and once as the root's
+    const under = genesis(lineage("e"), stamp(5, 0, PEER_A), lineage("a"));
+    const root = genesis(lineage("e"), stamp(2, 0, PEER_A));
+    for (const order of permutations([a, under, root])) {
+      expect(canonicalState(applyAll(order))).toBe(canonicalState(applyAll([a, under, root])));
+      expect(lineageAfter(order)).toBe(lineage("e"));
+    }
+    // at one stamp the copies differ only by parent: the root parent goes first, the other
+    // stands, whichever lands first (the order's tie-break, the same in both runtimes)
+    const same = genesis(lineage("e"), stamp(5, 0, PEER_A));
+    for (const order of permutations([same, under, a])) {
+      const kept = readLineageCell(
+        getRecord(applyAll(order), NOTES, N1)?.cells.get(CONTENT)?.value,
+      ).geneses.find((g) => g.lineage === lineage("e"));
+      expect(kept?.parent).toBe(lineage("a"));
+    }
+  });
+
+  test("any geneses with repeated lineages and any anchors: one cell in every order and batching", () => {
+    const peers = [PEER_A, PEER_B, PEER_C];
+    const arbitrary = fc
+      .uniqueArray(
+        fc.record({
+          ms: fc.integer({ min: 1, max: 20 }),
+          peer: fc.nat({ max: 2 }),
+          // a pool of three lineages, so most runs sign one lineage more than once
+          lineage: fc.nat({ max: 2 }),
+          parent: fc.option(fc.nat({ max: 3 }), { nil: undefined }),
+          anchor: fc.option(
+            fc.record({
+              lineage: fc.nat({ max: 3 }),
+              ms: fc.nat({ max: 19 }),
+              peer: fc.nat({ max: 2 }),
+            }),
+            { nil: undefined },
+          ),
+        }),
+        { minLength: 2, maxLength: 7, selector: ({ ms, peer }) => `${ms}/${peer}` },
+      )
+      .chain((gs) =>
+        fc.tuple(
+          fc.constant(gs),
+          fc.array(fc.nat(), { minLength: gs.length, maxLength: gs.length }),
+          fc.nat({ max: gs.length }),
+        ),
+      );
+    fc.assert(
+      fc.property(arbitrary, ([gs, order, cut]) => {
+        const all = gs.map(({ ms, peer, lineage: l, parent, anchor }) =>
+          genesis(
+            lineage(l.toString(16)),
+            stamp(ms, 0, peers[peer] ?? PEER_A),
+            parent === undefined || parent === l ? undefined : lineage(parent.toString(16)),
+            anchor === undefined || anchor.lineage === l || anchor.ms >= ms
+              ? undefined
+              : {
+                  lineage: lineage(anchor.lineage.toString(16)),
+                  stamp: stamp(anchor.ms, 0, peers[anchor.peer] ?? PEER_A),
+                },
+          ),
+        );
+        const shuffled = all
+          .map((g, i) => [order[i] ?? 0, g] as const)
+          .sort(([x], [y]) => x - y)
+          .map(([, g]) => g);
+        const forward = plainState(applyAll(all));
+        expect(plainState(applyAll(shuffled))).toEqual(forward);
+        expect(plainState(applyAll([...shuffled, ...all]))).toEqual(forward);
+        const joined = joinedHalves(shuffled.slice(0, cut), shuffled.slice(cut));
+        expect(plainState(joined)).toEqual(forward);
         expect(lineageAfter(shuffled)).toBe(lineageAfter(all));
       }),
       { numRuns: 1000, seed: 39 },

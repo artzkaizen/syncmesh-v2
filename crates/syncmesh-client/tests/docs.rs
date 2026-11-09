@@ -70,6 +70,7 @@ fn edit(byte: u8, lineage: Option<Id16>) -> Change {
         update: DocUpdate::Bytes(vec![byte]),
         genesis: false,
         legacy: false,
+        rule: None,
         parent: None,
         settles: None,
     })
@@ -575,13 +576,19 @@ fn persisted_state_holding_another_rules_lineage_cell_is_rebuilt_from_the_log() 
         CellValue::Array(items) => CellValue::from(items[1].clone()),
         other => other,
     };
-    let retag = |tagged: CellValue| match tagged {
-        CellValue::Array(items) => CellValue::Array(vec![JsonValue::Number(3.0), items[1].clone()]),
-        other => other,
+    let retag = |version: f64| {
+        move |tagged: CellValue| match tagged {
+            CellValue::Array(items) => {
+                CellValue::Array(vec![JsonValue::Number(version), items[1].clone()])
+            }
+            other => other,
+        }
     };
     for (persisted, found) in [
         (persisted_with(untag), "a lineage cell with no version"),
-        (persisted_with(retag), "a lineage cell of version 3"),
+        // rule 1 kept an equivocated lineage's first copy: its cell is refused (gaps U39)
+        (persisted_with(retag(1.0)), "a lineage cell of version 1"),
+        (persisted_with(retag(4.0)), "a lineage cell of version 4"),
     ] {
         // never read as the root: the state is the log's, refold for refold
         let rebuilt = open_over(persisted).expect("rebuilt from the log, not refused");

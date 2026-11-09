@@ -373,23 +373,27 @@ data = {
   2: lineage   bstr(16)           absent = the root lineage (§5.3)
   3: bytes     bstr               the update, inline            ┐ exactly one
   4: blob      [bstr(32), uint]   sha-256 + length, via D18     ┘
-  5: genesis   1 | 2              only on a replace(): `bytes`/`blob` is the new lineage's snapshot
+  5: genesis   1 | 2 | 3          only on a replace(): `bytes`/`blob` is the new lineage's snapshot
   6: parent    bstr(16)           only on a genesis: the lineage it replaces; absent = the root
   7: settles   [bstr(16), uint, uint, bstr(32)]
-                                  only on a genesis of rule 2: the anchor it settles the lineage
-                                  walk at — a lineage and its genesis's stamp (gap U21, §16.1)
+                                  only on a genesis of rule 2 or 3: the anchor it settles the
+                                  lineage walk at — a lineage and its genesis's stamp (gap U21,
+                                  §16.1)
 }
 ```
 
-Key 5 is `2` exactly when key 7 is present (gap U21): a genesis of rule 2 settles the walk, and
-a build that runs rule 1 alone refuses it at decode rather than fold it without trimming what its
-peers trim. Key 7 on any other genesis, or on an edit, is refused at decode.
-
 Key 5's value is the version of the lineage rule the genesis was written under: `1` is the
-first-genesis tree of §5.3 (decided in §16.1). The last-writer-wins rule before it wrote `true`.
-A build from then refuses every genesis value but `true`, so it quarantines a `1` instead of
-folding it by the old rule, and a build of this rule refuses `true` the same way. A parent on a
-change that is not a genesis, or a parent or lineage that is not 16 bytes, is refused at decode.
+first-genesis tree of §5.3 (decided in §16.1), `2` the same tree with a settled anchor (gap U21),
+and `3` the rule this build writes, which keeps an equivocated lineage's later copy (gap U39,
+§16.1). The last-writer-wins rule before them wrote `true`. Every genesis this build writes
+carries `3`, with key 7 when it settles the walk and without it when it does not. A genesis of
+`1` or `2` still decodes and folds — a genesis means the same under each version, only the
+cell's join changed — and keeps its version, so the event re-encodes as it was signed; `2` still
+requires key 7 and `1` still refuses it. A build of rule 1 or 2 refuses a `3` at decode rather
+than join its cell by the older rule. A build from before §16.1 refuses every genesis value but
+`true`, and a build of any of these rules decodes `true` as `legacy` and quarantines it at
+admission. Key 7 on an edit or on any other genesis is refused at decode. A parent on a change
+that is not a genesis, or a parent or lineage that is not 16 bytes, is refused at decode.
 
 A doc change is **order-free** at the fold. Its only effect on kernel state is §5.3's lineage
 cell. Everything else is appended to the doc log. Unknown `data` keys are skipped (RFC-0002
@@ -434,11 +438,12 @@ double their content when merged. Syncmesh answers it once:
   forever, which is why the rule is a tree and not one cell.
 - **The lineage cell holds the tree, not the winner.** In the kernel's `RowRecord`, the doc
   column's cell holds every genesis it has seen, keyed by lineage id, tagged with the version of
-  the rule that wrote it (the `1` a genesis carries in key 5):
-  `[1, { lineage → [parent | null, hlc ms, hlc logical, peer] }]`, or, once a genesis has settled
-  the walk (gap U21, §16.1), `[2, { … }, [anchor lineage, ms, logical, peer]]`. Two cells join by
-  union under the later anchor, dropping every genesis that anchor has passed (a lattice join:
-  commutative, associative, idempotent), and the cell's stamp is the later of the two. The winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never
+  the rule that joined it (`3`, gap U39):
+  `[3, { lineage → [parent | null, hlc ms, hlc logical, peer] }]`, or, once a genesis has settled
+  the walk (gap U21, §16.1), `[3, { … }, [anchor lineage, ms, logical, peer]]`. Two cells join by
+  union under the later anchor, dropping every genesis that anchor has passed and keeping the
+  later copy of a lineage an equivocating author signed twice (a lattice join: commutative,
+  associative, idempotent), and the cell's stamp is the later of the two. The winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never
   stored, so every arrival order and batching lands on one lineage. Row digests, snapshot pages
   (RFC-0019), repairs, tombstones and `insert`×`insert` carry the whole set, tag included,
   because they carry the cell. The SQL column still holds snapshot bytes. The projection writes
@@ -1004,7 +1009,7 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    **Decided 2026-11-08: the lineage cell is versioned before doc columns ship**, with the same
    `1` tag events carry, in all three places; a build meeting a cell of a version it does not run
    refuses it as a value rather than reading it as a root or merging it by LWW. **Built** (§5.3,
-   §10): the cell is `[1, { lineage → genesis }]` in both runtimes; `parseLineageCells` /
+   §10): the cell was `[1, { lineage → genesis }]` in both runtimes (now `[3, …]`, gap U39); `parseLineageCells` /
    `parse_lineage_cells` refuse any other cell as `LineageCellRefused` where it enters — a
    snapshot install and a repair (TypeScript; the Rust device takes neither) and persisted state
    at boot (both). `doc-vectors.json`'s `lineageCells` freeze the verdicts. A parent that lands
@@ -1021,8 +1026,8 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    floor every peer applies alike is carried in the event, not computed per peer. A `replace()`
    names, beside its parent, the deepest lineage on its author's walk whose genesis is stamped at
    least `lineageSettleAfter` (default 30 days; Rust `lineage_settle_after_ms`) before it — data
-   key 7, `settles`, with genesis key 5 written as `2`. Folding it moves the cell to
-   `[2, geneses, anchor]`: the walk starts at the anchor, and every genesis stamped at or below
+   key 7, `settles`, with genesis key 5 written as `2` (`3` since gap U39, below). Folding it
+   moves the cell to `[2, geneses, anchor]` (now `[3, geneses, anchor]`): the walk starts at the anchor, and every genesis stamped at or below
    the anchor's stamp, the anchor's own included, leaves the cell. Of two anchors the later stamp
    (then the larger lineage) holds. Dropping reads the genesis's stamp alone, never the lineage
    the anchor names: a member can sign an anchor whose stamp is not its lineage's genesis stamp
@@ -1058,12 +1063,51 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    The walk keeps its result only when each child genesis is stamped after its parent, so a row
    that joins outside an event (a snapshot page, a repair record) hands every stamp it carries,
    its geneses' and anchor's included, to the device's clock before it joins, as an event's stamp
-   is on receive. **Known gap (gaps U39):** the one order-dependence left is equivocation. An author that signs two
-   geneses at one sequence puts one
-   lineage in the cell twice; the join keeps the first by stamp, and with an anchor between the
-   two stamps the result depends on the order the three meet. Only a Byzantine author reaches
-   it; keeping the later stamp per lineage would make the join associative again, and changes
-   rule 1's frozen vectors, so it waits for a rule version.
+   is on receive.
+   **Gap U39, decided 2026-11-09 (Jace delegated the call) and built: rule 3, the later copy
+   stands.** An author that signs two geneses at one sequence (equivocation) puts one lineage
+   in the cell twice, since the lineage derives from the author, the sequence and the change
+   index. Rules 1 and 2 kept the first copy by stamp, and with an anchor stamped between the two
+   copies the result depended on the order the three met: a peer that met both copies first kept
+   the earlier one and the anchor then dropped it, losing the lineage, while a peer that met the
+   anchor first dropped the earlier copy on arrival and kept the later one, which could win. Row
+   cells converge under last-writer-wins even then, so this was the one place a single Byzantine
+   member split state for good. Rule 3 keeps the **later** copy (by stamp, then lineage, then
+   the root parent before any other). Dropping takes every genesis at or below the anchor's
+   stamp, so it removes a lineage's earlier copy no later than its later one; the latest copy
+   above the anchor is the same whether the copies were narrowed to one before the anchor
+   arrived or after. The cell — the set's later copy of each lineage, less what the latest anchor
+   passed — is then a function of the set of geneses and anchors alone, and so is the winner. A
+   copy that moves the lineage under another parent moves it on every peer alike. Considered and
+   not built: quarantining the equivocating author's lineage (detecting two copies needs both,
+   and a peer whose anchor dropped one never sees the equivocation, so the quarantine would
+   itself depend on order unless the cell kept every copy, which unbounds it again); resolving
+   by a hash of the genesis (the cell keeps no hash, and adding one changes the entry's shape for
+   no gain over the stamp). Keeping the later copy grants the equivocator nothing it could not
+   get by writing a fresh `replace()`.
+   **Versioning, as #20 built it:** every genesis this build writes carries `3` in key 5 (with
+   key 7 or without it), so a build of rule 1 or 2 refuses it at decode. Cells are
+   `[3, geneses]` and `[3, geneses, anchor]` wherever they are kept outside events, and a cell
+   tagged `1` or `2` is refused as `LineageCellRefused` (`version` 1 or 2) where it enters — a
+   snapshot install or a repair, and persisted state at boot, which is rebuilt from the log as
+   for any other refused cell, or refused as `StateCorrupt` when a snapshot installed rows the
+   log does not hold (§10). A genesis of rule 1 or 2 still decodes and folds under rule 3 and
+   re-encodes byte for byte (`DocChange.rule`, Rust `DocChange::rule`), so a log written before
+   rule 3 still reads. `doc-vectors.json` is regenerated: its lineage trees' records (rule 1's
+   included) carry the `3` tag, three trees hold an equivocated lineage (one with an anchor
+   between the copies), the cell verdicts refuse rules 1 and 2, and two events of rule 3 sit
+   beside the frozen events of rules 1 and 2; `policy-vectors.json`'s geneses are re-signed
+   under `3` with every verdict unchanged. Both runtimes test every meeting order of two
+   equivocating geneses and a settled anchor, and every split between two peers, plus a property
+   over repeated lineages with any anchors (`kernel/doc.test`, `syncmesh-core/tests/doc_fold.rs`).
+   Found on the way and fixed: the TypeScript order between two geneses of one lineage and one
+   stamp that differ only in parent was not antisymmetric (a non-root parent compared first both
+   ways), so the two runtimes could keep different copies; it now matches Rust's `Option`
+   order. **Where it departs:** an upgraded device whose persisted state holds a rule-1 or
+   rule-2 cell rebuilds that state from its log at the first open, and a device that joined by
+   snapshot (its state not all in its log) refuses to open until it rejoins; a mixed fleet's
+   older builds refuse every new `replace()` until they upgrade, as #20's `1` did to the builds
+   before it.
 2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
    to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
    the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and

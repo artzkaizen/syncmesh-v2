@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use proptest::prelude::*;
 use syncmesh_core::cbor::{Key, Value};
 use syncmesh_core::doc::{
-    DocChange, DocUpdate, GENESIS_RULE, Id16, Settled, lineage_text, read_lineage_cell,
+    DocChange, DocUpdate, Id16, LINEAGE_RULE, Settled, lineage_text, read_lineage_cell,
 };
 use syncmesh_core::envelope::envelope;
 use syncmesh_core::record::CellValue;
@@ -36,6 +36,7 @@ fn replace_of(lineage: Option<Id16>, genesis: bool, parent: Option<Id16>) -> Cha
         update: DocUpdate::Bytes(vec![1, 2, 3]),
         genesis,
         legacy: false,
+        rule: None,
         parent,
         settles: None,
     })
@@ -87,7 +88,7 @@ fn a_genesis_adds_only_itself_to_the_lineage_cell_and_never_the_write_stamp() {
     let state = fold(&[insert(&written), (doc(Some([9; 16]), true), at.clone())]);
     let record = state.record("notes", "n1").unwrap();
     let cell = record.cells.get("content").unwrap();
-    // the set as the TypeScript holds it: [1, lineage hex → [parent | null, ms, logical, peer]]
+    // the set as the TypeScript holds it: [3, lineage hex → [parent | null, ms, logical, peer]]
     let entry = JsonValue::Array(vec![
         JsonValue::Null,
         JsonValue::Number(3.0),
@@ -98,7 +99,7 @@ fn a_genesis_adds_only_itself_to_the_lineage_cell_and_never_the_write_stamp() {
     assert_eq!(
         cell.value,
         CellValue::Array(vec![
-            JsonValue::Number(GENESIS_RULE as f64),
+            JsonValue::Number(LINEAGE_RULE as f64),
             JsonValue::Object(BTreeMap::from([(lineage_text(&[9; 16]), entry)])),
         ])
     );
@@ -196,8 +197,123 @@ fn an_anchor_naming_a_lineage_at_another_stamp_trims_the_same_cell_in_any_order(
     assert_eq!(fold(&[x, y, l]), forward);
 }
 
+/// Every order of a short list.
+fn permutations<T: Clone>(xs: &[T]) -> Vec<Vec<T>> {
+    if xs.len() <= 1 {
+        return vec![xs.to_vec()];
+    }
+    (0..xs.len())
+        .flat_map(|i| {
+            let mut rest = xs.to_vec();
+            let x = rest.remove(i);
+            permutations(&rest).into_iter().map(move |mut p| {
+                p.insert(0, x.clone());
+                p
+            })
+        })
+        .collect()
+}
+
+/// The record two peers hold after each folded one part and they exchanged records.
+fn joined_halves(left: &[(Change, Stamp)], right: &[(Change, Stamp)]) -> State {
+    let spec = BTreeMap::from([(
+        "notes".to_owned(),
+        BTreeMap::from([("content".to_owned(), StrategyName::Lineage)]),
+    )]);
+    let mut joined = State::new();
+    for half in [left, right] {
+        if let Some(record) = fold(half).record("notes", "n1") {
+            merge_record(&mut joined, "notes", "n1", record.clone(), Some(&spec));
+        }
+    }
+    joined
+}
+
+/// The geneses `fill` holds in a state's lineage cell.
+fn copies(state: &State, fill: u8) -> Vec<syncmesh_core::doc::Genesis> {
+    read_lineage_cell(
+        state
+            .record("notes", "n1")
+            .and_then(|r| r.cells.get("content"))
+            .map(|c| &c.value),
+    )
+    .geneses
+    .into_iter()
+    .filter(|g| g.lineage == [fill; 16])
+    .collect()
+}
+
+#[test]
+fn two_copies_of_one_lineage_and_an_anchor_between_them_meet_in_any_order_as_one_cell() {
+    // peer 1 signs two geneses of lineage `e` at one sequence: one stamped below the anchor `d`
+    // settles at (c's stamp, 4), one above it. Under rule 2 the order decided whether `e`
+    // survived (and won) or was dropped with its first copy (gaps U39)
+    let c = genesis(0xc, 4, 2, None);
+    let early = genesis(0xe, 3, 1, Some(0xc));
+    let late = genesis(0xe, 6, 1, Some(0xc));
+    let d = settling(0xd, 10, 2, Some(0xc), Some((0xc, 4, 2)));
+    let all = [c, early, late, d];
+    let forward = fold(&all);
+    assert_eq!(lineage(&forward), Some([0xe; 16]));
+    let kept = copies(&forward, 0xe);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].stamp, Stamp::new(Hlc::new(6, 0), peer(1)));
+    for order in permutations(&all) {
+        assert_eq!(fold(&order), forward);
+        for cut in 0..=order.len() {
+            let joined = joined_halves(&order[..cut], &order[cut..]);
+            assert_eq!(joined, forward);
+        }
+    }
+}
+
+#[test]
+fn two_copies_with_no_anchor_keep_the_later_and_at_one_stamp_the_one_under_a_parent() {
+    let a = genesis(0xa, 1, 2, None);
+    let under = genesis(0xe, 5, 1, Some(0xa));
+    for root in [genesis(0xe, 2, 1, None), genesis(0xe, 5, 1, None)] {
+        let all = [a.clone(), under.clone(), root];
+        for order in permutations(&all) {
+            let state = fold(&order);
+            assert_eq!(lineage(&state), Some([0xe; 16]));
+            assert_eq!(copies(&state, 0xe)[0].parent, Some([0xa; 16]));
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 300, ..ProptestConfig::default() })]
+
+    /// Geneses drawn from a pool of three lineages — so most runs hold an author that signed one
+    /// lineage more than once — with any anchors, join to one cell and one winner in every order,
+    /// replay and split between two peers that then exchange records, as the TypeScript's "any
+    /// geneses with repeated lineages" property (gaps U39).
+    #[test]
+    fn repeated_lineages_and_any_anchors_join_to_one_cell_in_every_order(
+        specs in proptest::collection::btree_map(
+            (1i64..21, 0u8..3),
+            (0u8..3, proptest::option::of(0u8..4), proptest::option::of((0u8..4, 0i64..20, 0u8..3)), any::<u32>()),
+            2..8,
+        ),
+        cut in 0usize..8,
+    ) {
+        let all: Vec<(Change, Stamp)> = specs
+            .iter()
+            .map(|((ms, p), (fill, parent, anchor, _))| {
+                let parent = parent.filter(|f| f != fill);
+                let anchor = anchor.filter(|&(l, at, _)| l != *fill && at < *ms);
+                settling(*fill, *ms, *p, parent, anchor)
+            })
+            .collect();
+        let mut shuffled: Vec<_> = specs.values().map(|(_, _, _, o)| *o).zip(all.clone()).collect();
+        shuffled.sort_by_key(|(o, _)| *o);
+        let shuffled: Vec<_> = shuffled.into_iter().map(|(_, g)| g).collect();
+        let forward = fold(&all);
+        prop_assert_eq!(&fold(&shuffled), &forward);
+        prop_assert_eq!(&fold(&[shuffled.clone(), all.clone()].concat()), &forward);
+        let cut = cut.min(shuffled.len());
+        prop_assert_eq!(&joined_halves(&shuffled[..cut], &shuffled[cut..]), &forward);
+    }
 
     /// Any tree of geneses — each replacing the root or one before it — in any delivery order, any
     /// replay and any split between two peers that then exchange records, holds one cell and
