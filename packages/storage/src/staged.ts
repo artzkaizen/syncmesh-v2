@@ -16,9 +16,10 @@ import { Temporal, durationMs } from "@syncmesh/temporal";
 import type { StagedSql } from "./dialect.js";
 import type { SqlDriver, SqlRow } from "./driver.js";
 
-import { netChange, netEffects } from "./capture.js";
+import { netChange } from "./capture.js";
 import { driverDialect } from "./dialect.js";
 import { attempt, inTransaction } from "./sql.js";
+import { netOfWrites } from "./sweep-net.js";
 
 /*
  * The staged-changes sweeper (RFC-0025): a `ChangeSource` over the queue a staged table's guard
@@ -79,11 +80,11 @@ const sourceRow = (table: Table, cells: Row, partition: string | null): SourceRo
 
 /**
  * One sweep's rows as one transaction: each row's net effect across every write the sweep took,
- * exactly as a capture nets a transaction's log, so an update carries only the columns that
- * changed — a field the writer left alone is no write to it — and a counter carries its
- * increment. `_partition` rides each row as the guard filed it: the row's own once the mesh placed
- * it, `null` on a row the outside writer inserted. The bridge files an update to a row the engine
- * holds in the instance it holds it in, so the mapping places only rows the mesh has not seen.
+ * so an update carries only the columns those writes changed — a field the writer left alone is
+ * no write to it, even when a fold or a captured write changed it between two of them — and a
+ * counter carries the writer's own increments. `_partition` rides each row as the guard filed it:
+ * the row's own once the mesh placed it, `null` on a row the outside writer inserted. The bridge
+ * files an update to a held row the mapping cannot place in the instance the engine holds it in.
  */
 function sweepMessages(
   tables: ReadonlyMap<string, Table>,
@@ -99,7 +100,7 @@ function sweepMessages(
     },
   );
   const messages: ChangeMessage[] = [{ t: "begin" }];
-  for (const net of netEffects(tables, logged)) {
+  for (const net of netOfWrites(tables, logged)) {
     const change = netChange(net);
     if (change === undefined) continue;
     const table = net.table.name;
@@ -190,11 +191,13 @@ export function stagedChangeSource(options: StagedOptions): StagedChangeSource {
     name: options.name,
     sweep: wakeAll,
     pending: () =>
-      attempt("could not count the staged changes", async () => {
-        for (const sql of staged.ddl) await driver.run(sql);
-        const [row] = await driver.all(staged.depth);
-        return Number(row?.[0] ?? 0);
-      }),
+      attempt("could not count the staged changes", () =>
+        inTransaction(driver, async () => {
+          for (const sql of staged.ddl) await driver.run(sql);
+          const [row] = await driver.all(staged.depth);
+          return Number(row?.[0] ?? 0);
+        }),
+      ),
     start: async ({ after }) => {
       await inTransaction(driver, async () => {
         for (const sql of staged.ddl) await driver.run(sql);

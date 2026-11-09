@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { SqlDriver } from "../driver.js";
 
+import { folding } from "../guard.js";
 import { openStores, schemaName } from "../open-stores.js";
 import { operationStore } from "../operation-store.js";
 import { stagedChangeSource } from "../staged.js";
@@ -31,6 +32,7 @@ const schema = syncSchema({
         orgId: t.text(),
         title: t.text(),
         status: t.text(),
+        views: t.integer({ merge: "counter" }).nullable(),
       },
     },
   },
@@ -96,6 +98,15 @@ const row = (engine: Awaited<ReturnType<typeof authority>>["engine"], id: string
   return found === undefined ? undefined : Object.fromEntries(found);
 };
 
+/** The update patches of every event sent after the first `skip`, as plain objects. */
+const patchesAfter = (sent: readonly SyncEvent[], skip: number) =>
+  sent
+    .slice(skip)
+    .flatMap((event) => event.changes)
+    .flatMap((change) =>
+      change.kind === "update" && change.table === TASKS ? [Object.fromEntries(change.patch)] : [],
+    );
+
 const tableRows = async (driver: SqlDriver) =>
   (await driver.all(`SELECT id, title, status, "_partition" FROM tasks ORDER BY id`)).map((cells) =>
     cells.map(String).join(" "),
@@ -130,6 +141,7 @@ describe("a staged table, written by the mesh and by something outside it", () =
       orgId: "acme",
       title: "from the mesh",
       status: "done",
+      views: null,
     });
     const swept = sent.filter((event) => event.partition === ACME).slice(1);
     expect(swept).toHaveLength(1);
@@ -158,6 +170,65 @@ describe("a staged table, written by the mesh and by something outside it", () =
     const report = (await running.done).unwrap();
     expect(report.transactions).toBe(1);
     expect(storedWatermark(engine, source.name)).toBe(report.watermark);
+  });
+
+  test("a mesh write between two outside writes to one row is not signed again by the sweep", async () => {
+    const driver = await openPair(":memory:", schemaName(tables));
+    const { stores, engine, sent, source, write } = await authority(driver);
+    const captured = async (name: string, sql: string) =>
+      (await write(name, () => stores.driver.run(sql), { partition: ACME })).unwrap();
+    await captured(
+      "tasks.create",
+      `INSERT INTO tasks (id, orgId, title, status) VALUES ('t1', 'acme', 'first', 'open')`,
+    );
+    await stores.driver.run(`UPDATE tasks SET status = 'a' WHERE id = 't1'`);
+    await captured("tasks.update", `UPDATE tasks SET title = 'mesh title' WHERE id = 't1'`);
+    await stores.driver.run(`UPDATE tasks SET status = 'b' WHERE id = 't1'`);
+    const meshed = sent.length;
+
+    const running = (await startCapture({ engine, source, mappings })).unwrap();
+    await eventually(() => row(engine, "t1")?.["status"] === "b", "the outside writes");
+    running.stop();
+    (await running.done).unwrap();
+
+    // the title is the mesh's own write and keeps the mesh's stamp: a later device edit to it wins
+    expect(patchesAfter(sent, meshed)).toEqual([{ status: "b" }]);
+    expect(row(engine, "t1")).toEqual({
+      id: "t1",
+      orgId: "acme",
+      title: "mesh title",
+      status: "b",
+      views: null,
+    });
+  });
+
+  test("a counter moves by the outside writer's increments, not by a fold's between them", async () => {
+    const driver = await openPair(":memory:", schemaName(tables));
+    const { stores, engine, sent, source, write } = await authority(driver);
+    (
+      await write(
+        "tasks.create",
+        () =>
+          stores.driver.run(
+            `INSERT INTO tasks (id, orgId, title, status, views) VALUES ('t1', 'acme', 'first', 'open', 0)`,
+          ),
+        { partition: ACME },
+      )
+    ).unwrap();
+    await stores.driver.run(`UPDATE tasks SET views = views + 1 WHERE id = 't1'`);
+    // a fold writing another peer's increment: the guard lets it by and files nothing
+    await folding(stores.driver, () =>
+      stores.driver.run(`UPDATE tasks SET views = views + 10 WHERE id = 't1'`),
+    );
+    await stores.driver.run(`UPDATE tasks SET views = views + 2 WHERE id = 't1'`);
+    const meshed = sent.length;
+
+    const running = (await startCapture({ engine, source, mappings })).unwrap();
+    await eventually(() => sent.length > meshed, "the outside writes");
+    running.stop();
+    (await running.done).unwrap();
+
+    expect(patchesAfter(sent, meshed)).toEqual([{ views: { "+": 3 } }]);
   });
 
   test("an outside update to a row the mesh has not placed yet still lands in the row's instance", async () => {
