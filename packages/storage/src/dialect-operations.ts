@@ -79,7 +79,8 @@ export const sqliteOperations = (log: LogPlacement): OperationSql => {
     FROM ${t("operations")} o LEFT JOIN ${t("vouches")} v ON v.peer = o.peer AND v.seq = o.seq
     WHERE v.peer IS NULL ORDER BY o.at_ms, o.seq`,
     deleteStaleVouches: `DELETE FROM ${t("vouches")} WHERE holder = ? AND incarnation <> ?`,
-    selectNewerVouch: `SELECT 1 FROM ${t("vouches")} WHERE holder = ? AND peer = ? AND at_ms > ? LIMIT 1`,
+    selectNewerVouch: `SELECT DISTINCT incarnation FROM ${t("vouches")}
+    WHERE holder = ? AND at_ms > ? AND (peer = ? OR incarnation <> ?)`,
     deleteWithdrawnVouches: `DELETE FROM ${t("vouches")}
     WHERE holder = ? AND peer = ? AND seq > ? AND at_ms <= ?`,
     deleteUnheldVouches: `DELETE FROM ${t("vouches")} WHERE holder = ? AND peer = ? AND seq > ?`,
@@ -163,7 +164,8 @@ export const POSTGRES_OPERATIONS: OperationSql = {
     LEFT JOIN syncmesh.vouches v ON v.peer = o.peer AND v.seq = o.seq
     WHERE v.peer IS NULL ORDER BY o.at_ms, o.seq`,
   deleteStaleVouches: `DELETE FROM syncmesh.vouches WHERE holder = $1 AND incarnation <> $2`,
-  selectNewerVouch: `SELECT 1 FROM syncmesh.vouches WHERE holder = $1 AND peer = $2 AND at_ms > $3 LIMIT 1`,
+  selectNewerVouch: `SELECT DISTINCT incarnation FROM syncmesh.vouches
+    WHERE holder = $1 AND at_ms > $2 AND (peer = $3 OR incarnation <> $4)`,
   deleteWithdrawnVouches: `DELETE FROM syncmesh.vouches
     WHERE holder = $1 AND peer = $2 AND seq > $3 AND at_ms <= $4`,
   deleteUnheldVouches: `DELETE FROM syncmesh.vouches WHERE holder = $1 AND peer = $2 AND seq > $3`,

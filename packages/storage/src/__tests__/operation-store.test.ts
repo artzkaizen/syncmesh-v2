@@ -151,6 +151,26 @@ describe("operationStore", () => {
     ]);
   });
 
+  test("a rebuilt holder whose clock runs behind still retires what its lost store signed", async () => {
+    const { store } = await open();
+    for (const n of [1, 2, 3])
+      (await store.record({ id: `op-${n}`, peer: A, seq: seq(n), label: "l", atMs: n })).unwrap();
+    (await store.vouch(B, A, seq(3), "inc-1", 50)).unwrap();
+
+    // B lost its store and rebuilt under inc-2 with a clock behind the old one's last receipt
+    (await store.vouch(B, A, seq(1), "inc-2", 20)).unwrap();
+    expect((await store.vouchesOf(A, seq(3))).unwrap()).toEqual([]);
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual([
+      "op-1",
+      "op-2",
+      "op-3",
+    ]);
+
+    // its next receipt is the only claim left, and it counts
+    (await store.vouch(B, A, seq(1), "inc-2", 25)).unwrap();
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-2", "op-3"]);
+  });
+
   test("a vouch whose insert fails leaves the holder's earlier claim whole", async () => {
     const driver = await openPair();
     let failing = false;
