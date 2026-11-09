@@ -116,7 +116,7 @@ const wireError = (error: Error): ORPCError<string, unknown> => {
   });
 };
 
-/** What a leaf hands back: rows behind a `run()` for a query, or a `Result` for anything else. */
+/** What a leaf hands back: rows behind a `run()` for a query, a write's handle, or a `Result`. */
 type Leaf = (
   input: unknown,
 ) => { readonly "~mesh": { readonly run: () => Promise<unknown> } } | Promise<unknown>;
@@ -214,8 +214,10 @@ export function createHandler<R extends Router>(options: HandlerOptions<R>): Pro
     const ran = await Result.tryPromise({
       try: async () => {
         const made = leaf(input);
-        // the rows, not the `Result` awaiting the descriptor would give: a query crosses as rows
-        return def.kind === "query" && "~mesh" in made ? made["~mesh"].run() : made;
+        // the rows, not the `Result` awaiting the descriptor would give: a query crosses as rows;
+        // a write is a handle, not an answer, and crosses as its local commit, `{ eventId, data }`
+        if (def.kind === "query" && "~mesh" in made) return made["~mesh"].run();
+        return def.kind === "mutation" && "committed" in made ? made.committed : made;
       },
       catch: asError,
     });

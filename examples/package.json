@@ -5,6 +5,10 @@
   "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a fleet behind a load balancer",
   "type": "module",
   "exports": {
+    "./rounds/practice": {
+      "@syncmesh/source": "./src/rounds/practice.ts",
+      "default": "./src/rounds/practice.ts"
+    },
     "./rounds/schema": {
       "@syncmesh/source": "./src/rounds/schema.ts",
       "default": "./src/rounds/schema.ts"

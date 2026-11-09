@@ -7,7 +7,7 @@
     "build": "vite build",
     "dev": "vite dev --port 5199",
     "relay": "bun src/server/relay.ts",
-    "smoke": "bun src/__tests__/smoke.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

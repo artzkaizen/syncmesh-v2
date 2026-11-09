@@ -35,13 +35,10 @@ const call = createServerFn({ method: "POST" })
     // in-process: this function already holds the server, so it asks it rather than posting to itself
     const { handle } = await import("../server/mesh.js");
     const answered = await handle.call(data.path, data.input);
-    return answered.match({
-      // SAFETY: what a leaf answers is what its procedure declared, which is JSON-shaped by construction
-      ok: (value): Answer => ({ data: value as JsonValue }),
-      err: (error) => {
-        throw new Error(error.message);
-      },
-    });
+    // thrown here, not inside `match`: a handler that throws is a panic there, and its message is lost
+    if (answered.isErr()) throw new Error(answered.error.message);
+    // SAFETY: what a leaf answers is what its procedure declared, which is JSON-shaped by construction
+    return { data: answered.value as JsonValue };
   });
 
 /**

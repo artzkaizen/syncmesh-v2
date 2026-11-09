@@ -9,22 +9,33 @@ import { observation, patient } from "./schema.js";
  * The app's API. Every read and every write an app performs is one of these, and Drizzle appears
  * only inside a handler — a component names `api.observations.forPatient({ … })` and nothing else
  * (D26).
+ *
+ * Every input names its practice (`practiceId`): both tables live in a `practice` partition, and
+ * scope is input, never construction. A call without it is about the global tables, which hold
+ * neither, so a write would be refused `WrongPartition` and a read would find nothing.
  */
 
+/** An input about one practice: `practiceId` beside the call's own fields. */
+/* oxlint-disable-next-line anti-slop/no-shape-in-symbol-names -- `ZodRawShape` is zod's own exported name for a field map */
+const inPractice = <T extends z.ZodRawShape>(fields: T) =>
+  z.object({ practiceId: z.string().min(1), ...fields });
+
 export const patients = {
-  list: query.handler(({ db }) => db.select().from(patient).orderBy(asc(patient.bed))),
+  list: query
+    .input(inPractice({}))
+    .handler(({ db }) => db.select().from(patient).orderBy(asc(patient.bed))),
 
   admit: mutation
-    .input(z.object({ id: z.string(), name: z.string().min(1), bed: z.string().min(1) }))
-    .handler(async ({ input, db }) => {
-      await db.insert(patient).values(input);
-      return input;
+    .input(inPractice({ id: z.string(), name: z.string().min(1), bed: z.string().min(1) }))
+    .handler(async ({ input: { practiceId: _, ...row }, db }) => {
+      await db.insert(patient).values(row);
+      return row;
     }),
 };
 
 export const observations = {
   /** Where one reading's own write got to — a column, selected with the row it is about. */
-  reach: query.input(z.object({ id: z.string() })).handler(({ input, db, self }) =>
+  reach: query.input(inPractice({ id: z.string() })).handler(({ input, db, self }) =>
     db
       .select({ id: observation.id, sync: syncOf(self, observation) })
       .from(observation)
@@ -33,7 +44,7 @@ export const observations = {
 
   /** One patient's readings, newest first. Live: another clinician's entry arrives as a re-render. */
   forPatient: query
-    .input(z.object({ patientId: z.string() }))
+    .input(inPractice({ patientId: z.string() }))
     .handler(({ input, db }) =>
       db
         .select()
@@ -44,7 +55,7 @@ export const observations = {
 
   record: mutation
     .input(
-      z.object({
+      inPractice({
         patientId: z.string(),
         code: z.string().min(1),
         value: z.string().min(1),
@@ -52,9 +63,9 @@ export const observations = {
         author: z.string().min(1),
       }),
     )
-    .handler(async ({ input, db }) => {
+    .handler(async ({ input: { practiceId: _, ...reading }, db }) => {
       const id = crypto.randomUUID();
-      await db.insert(observation).values({ id, ...input, amends: null });
+      await db.insert(observation).values({ id, ...reading, amends: null });
       return { id };
     }),
 
@@ -63,7 +74,7 @@ export const observations = {
    * deleted, so a reading taken on a ward with no signal cannot be lost by a later one.
    */
   amend: mutation
-    .input(z.object({ amends: z.string(), value: z.string().min(1), author: z.string().min(1) }))
+    .input(inPractice({ amends: z.string(), value: z.string().min(1), author: z.string().min(1) }))
     .handler(async ({ input, db }) => {
       const [previous] = await db
         .select()
