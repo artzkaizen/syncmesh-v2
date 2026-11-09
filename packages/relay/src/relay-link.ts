@@ -237,6 +237,10 @@ export class RelayLink {
       onHello: ({ keepaliveMs: announcedMs, epoch, durable, cursors }) => {
         this.visibility.lineage(epoch);
         this.durability.hello(epoch, durable, cursors);
+        // the room's key and the lineage of its log, both proven: what it signed out of any other
+        // lineage stops counting before it re-signs anything (D28 §2)
+        const relay = this.sealing.relay();
+        if (relay !== undefined) this.ctx?.onLineage?.(relay, epoch);
         this.report.proven();
         this.liveness.announce(Temporal.Duration.from({ milliseconds: announcedMs }));
         this.redial.settled();

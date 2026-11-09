@@ -122,6 +122,16 @@ export interface OperationStore {
     seq: SeqNum,
   ) => Promise<ResultType<readonly VouchRow[], StoreFailure>>;
   /**
+   * Forgets every vouch `holder` made under an incarnation other than `incarnation`: the holder
+   * proved it speaks from that lineage now (a relay room's `hello`, D28 §2), so what it signed out
+   * of a store it lost no longer counts, though it has not signed anything out of the new one yet.
+   * The same withdrawal {@link OperationStore.vouch} makes first, without a receipt to record.
+   */
+  readonly retireLineages: (
+    holder: PeerId,
+    incarnation: string,
+  ) => Promise<ResultType<void, StoreFailure>>;
+  /**
    * Records one peer's signed refusal of one of this device's writes, replacing that peer's
    * earlier verdict on it — idempotent. Skipped for a write with no record, and for one the
    * refuser has already signed custody of. `atMs` is the refusal's own `issuedAt`, the refuser's
@@ -272,6 +282,10 @@ export function operationStore(
               throughSeq,
             ]);
           }),
+        ),
+      retireLineages: (holder, incarnation) =>
+        write("vouch withdrawal failed", () =>
+          driver.run(sql.deleteStaleVouches, [holder, incarnation]),
         ),
       vouchesOf: (peer, seq) =>
         Result.gen(async function* () {

@@ -2,18 +2,17 @@ import type {
   Cursors,
   EventStore,
   StoreFailure,
-  StoredEvent,
   TelemetryEvent,
   TelemetryListener,
 } from "@syncmesh/engine";
 import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { BlobHomes, BlobLedger, BlobStore } from "@syncmesh/storage";
 
-import { createHub, heldRuns, trackCoverage, type Unsubscribe } from "@syncmesh/engine";
+import { createHub, heldRuns, type Unsubscribe } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
-import { createIdentity, isRelayable, randomBytes, type Identity } from "@syncmesh/wire";
+import { createIdentity, randomBytes, type Identity } from "@syncmesh/wire";
 
 import type { RelayAdmission } from "./admission.js";
 import type { ConnectionOptions, RelayConnection } from "./connection.js";
@@ -33,6 +32,7 @@ import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } 
 import { createGrantCache } from "./grant-cache.js";
 import { DEFAULT_LIMITS, createBudget } from "./limits.js";
 import { roomRetention } from "./retention.js";
+import { roomCoverage, servable } from "./room-coverage.js";
 import { assertTruthfulCustody, createRoomReceipts } from "./room-receipts.js";
 
 export type { ConnectionOptions, RelayConnection } from "./connection.js";
@@ -83,8 +83,7 @@ export interface RelayRoomOptions {
    * - `durable` must be true: a log in memory is gone on restart, and its receipts with it.
    * - `retention.keepEventsFor` must be absent: a receipt says "everything through N", and a room
    *   that trims holds only the end of that. A log trimmed before this open is not refused, but an
-   *   author whose events compaction removed is never signed for: the room signs its held run,
-   *   which starts below the floor and never closes over it.
+   *   author whose events compaction removed is never signed for.
    *
    * Absent, the room signs nothing, as every room did before.
    */
@@ -214,20 +213,7 @@ export async function openRelayRoom(
   const trimmed = await store.compactedBelow();
   if (trimmed.isErr()) return Result.err(trimmed.error);
 
-  /**
-   * What catch-up can actually hand over: a synced entry whose author's signature was stored. An
-   * entry without one is dropped by `paged`, and a local one is out of `allSince`'s scope — so
-   * counting either into the room's position would advertise a place the room can never serve
-   * from. Any log the relay did not fill itself holds both (`StartRelayOptions.store`).
-   */
-  const servable = (entry: StoredEvent): boolean =>
-    isRelayable(entry) && entry.event.local !== true;
-  // contiguous, and over the same entries: a MAX cursor over a hole is a claim the room cannot
-  // take back, because every client asks for what is *above* the number it was given
-  // the held run starts empty, not at the floor: what compaction removed is advertised (nobody is
-  // sent it again) but not held, so the run the room signs (U38) never closes over a trimmed author
-  const coverage = trackCoverage({ ...trimmed.value, held: new Map() });
-  for (const entry of boot.value) if (servable(entry)) coverage.note(entry.event);
+  const coverage = roomCoverage(trimmed.value, boot.value);
   const cursors = () => coverage.current().synced;
   const held = () => heldRuns(coverage.current());
   let offset = boot.value.length;
@@ -297,7 +283,12 @@ export async function openRelayRoom(
   const receipts =
     options.custody === undefined
       ? undefined
-      : createRoomReceipts({ clients, held, identity, epoch, now }, options.custody);
+      : createRoomReceipts(
+          // compaction removed the start of these authors' runs before this open: their cursors
+          // are advertised, so nobody is sent the trimmed events again, but never signed (U38)
+          { clients, held, trimmed: trimmed.value.synced, identity, epoch, now },
+          options.custody,
+        );
 
   const state: RoomState = {
     store,

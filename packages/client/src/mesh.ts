@@ -185,11 +185,8 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     // the two halves of signed custody (D28): what this device can vouch for out of its own
     // store, and where a peer's vouch for this device's writes lands. A mesh over a bare event
     // store has neither, and passes neither, rather than passing a sink with nowhere to write
-    ...omitUndefined({
-      incarnation: booted.incarnation,
-      onReceipt: wired.vouched,
-      onRefusal: wired.refused,
-    }),
+    ...omitUndefined({ incarnation: booted.incarnation }),
+    ...wired.custody,
     onSnapshot: (installed) => snapshots.emit(installed),
     servesAuthority: trust?.authority === identity.peerId,
     // the gated tables, which reach a device only through the authority's gate (D24)

@@ -257,6 +257,8 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
    * thing an epoch is supposed to mean it is not.
    */
   const singleEpoch = options.singleRoom?.epoch ?? crypto.randomUUID();
+  /** The rooms already said to sign no custody, so an idle eviction does not say it again. */
+  const unsigned = new Set<string>();
 
   const open = async (name: string, grants: GrantCache): Promise<OpenedRoom> => {
     if (options.singleRoom !== undefined) {
@@ -283,7 +285,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
         blobLedger: held.blobLedger,
         identity: held.identity,
         durable: held.durable,
-        custody: hostedCustody(options.custody, held, name),
+        custody: hostedCustody(options.custody, held, name, unsigned),
       }),
       name,
       grants,

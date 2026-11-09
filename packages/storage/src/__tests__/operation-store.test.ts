@@ -90,6 +90,23 @@ describe("operationStore", () => {
     expect((await store.vouchesOf(A, seq(2))).unwrap()).toEqual([]);
   });
 
+  test("a holder that proves a new lineage stops counting for the old one before it signs again", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.vouch(B, A, seq(1), "inc-1", 10)).unwrap();
+    (await store.vouch(C, A, seq(1), "inc-9", 10)).unwrap();
+
+    // B said hello from inc-2: what it signed out of inc-1 is gone, and nobody else's vouch is
+    (await store.retireLineages(B, "inc-2")).unwrap();
+    expect((await store.vouchesOf(A, seq(1))).unwrap()).toEqual([
+      { holder: C, incarnation: "inc-9", atMs: 10 },
+    ]);
+    // the lineage it is in now keeps what it signed
+    (await store.vouch(B, A, seq(1), "inc-2", 20)).unwrap();
+    (await store.retireLineages(B, "inc-2")).unwrap();
+    expect((await store.vouchesOf(A, seq(1))).unwrap().map((v) => v.holder)).toEqual([C, B]);
+  });
+
   test("a holder that signs for less withdraws what it signed above it, and a stale one does not", async () => {
     const { store } = await open();
     for (const n of [1, 2, 3])

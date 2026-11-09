@@ -103,6 +103,11 @@ export interface OpenedOperations {
   /** A verified refusal of one of this device's writes (D32), handed to the transports likewise. */
   readonly refused: (refusal: RefusalReceipt) => void;
   /**
+   * A holder proved which lineage of its store it speaks from now (D28 §2): what it signed out of
+   * any other stops counting. Handed to the transports likewise.
+   */
+  readonly relineaged: (holder: PeerId, incarnation: string) => void;
+  /**
    * The store a writer must be given: the caller's rows, plus the notification a local commit
    * owes its listeners. Handing the bare store to a writer instead is how a record lands that
    * nothing watching the ledger ever hears about.
@@ -115,9 +120,16 @@ export interface WiredOperations {
   /** What every handle's writer needs threaded in ({@link HandleExtras}). */
   readonly extras: HandleExtras;
   readonly view?: OperationsView;
-  /** Absent for a mesh over a bare event store: nowhere to put a vouch, so none is asked for. */
-  readonly vouched?: (receipt: CustodyReceipt) => void;
-  readonly refused?: (refusal: RefusalReceipt) => void;
+  /**
+   * Where the transports hand what arrives about this device's own writes, under the
+   * `TransportContext` names. Absent for a mesh over a bare event store: nowhere to put a vouch,
+   * so none is asked for.
+   */
+  readonly custody?: {
+    readonly onReceipt: (receipt: CustodyReceipt) => void;
+    readonly onRefusal: (refusal: RefusalReceipt) => void;
+    readonly onLineage: (holder: PeerId, incarnation: string) => void;
+  };
   readonly stop: () => void;
 }
 
@@ -140,8 +152,11 @@ export function wireOperations(deps: {
   return {
     extras,
     view: opened.view,
-    vouched: opened.vouched,
-    refused: opened.refused,
+    custody: {
+      onReceipt: opened.vouched,
+      onRefusal: opened.refused,
+      onLineage: opened.relineaged,
+    },
     stop: opened.stop,
   };
 }
@@ -266,6 +281,20 @@ export function openOperations(deps: {
     );
   };
 
+  /**
+   * A holder's proven lineage, made durable: its vouches out of any other are forgotten, in
+   * arrival order with the vouches themselves, so a receipt that came after the `hello` is kept.
+   */
+  const relineaged = (holder: PeerId, incarnation: string): void => {
+    inOrder(() =>
+      store.retireLineages(holder, incarnation).then((written) => {
+        // evidence, not silence: the holder's stale vouches keep counting until it next signs
+        if (written.isErr()) console.warn(`lineage of ${holder} not recorded:`, written.error);
+        else changed();
+      }),
+    );
+  };
+
   /** A folded `_corrections` row naming one of this device's writes marks its record superseded. */
   const overruled = (): void => {
     for (const row of corrections(engine)) {
@@ -308,6 +337,7 @@ export function openOperations(deps: {
     store: recording,
     vouched,
     refused,
+    relineaged,
     view: {
       get: openRef,
       byEvent: (peer, seq) => store.byEvent(peer, seq),

@@ -28,8 +28,8 @@ export const ROOM_CUSTODY_EVERY = Temporal.Duration.from({ seconds: 1 });
  * names it: the key has to be given and outlive the log (one minted per process, or kept beside
  * the log, comes back as a different holder after the log is lost, and what the old key signed is
  * never withdrawn), the log has to be durable, and it must not be trimmed, because a receipt says
- * "everything through N". A log trimmed before this open is not refused: the room's held run starts
- * empty under its floors, so an author it trimmed is never signed for and the others still are.
+ * "everything through N". A log trimmed before this open is not refused: an author it trimmed is
+ * never signed for, and the others still are ({@link createRoomReceipts}'s `trimmed`).
  *
  * @param who - What is asking, for the message: a room by name, or a host.
  */
@@ -57,16 +57,22 @@ export function assertTruthfulCustody(
 /**
  * What a host passes to one room it opens: its `custody`, or nothing when the room cannot sign
  * truthfully under the host's key — a log that is not durable, or a store that brings its own key,
- * which is lost with the log (a Durable Object's). A room asked to sign that will not is said at
- * each open, so an operator does not believe it signs.
+ * which is lost with the log (a Durable Object's). A room asked to sign that will not is said the
+ * first time it opens, so an operator does not believe it signs.
+ *
+ * @param warned - The rooms already said, kept by the host: a room reopened after it went idle is
+ *   not said again.
  */
 export function hostedCustody(
   custody: RoomCustodyOptions | undefined,
   held: { readonly durable?: boolean | undefined; readonly identity?: Identity | undefined },
   name: string,
+  warned: Set<string>,
 ): RoomCustodyOptions | undefined {
   if (custody === undefined || (held.durable === true && held.identity === undefined))
     return custody;
+  if (warned.has(name)) return undefined;
+  warned.add(name);
   const why =
     held.identity === undefined
       ? "its log is not durable"
@@ -98,9 +104,10 @@ export interface RoomReceipts {
  * The run is the room's held run: every event of the author's from its first through N is in the
  * log. It is the contiguous cursor every `hello` advertises, except for an author whose events
  * compaction removed before this open — advertised, so nobody is sent them again, but not held, so
- * never signed. The incarnation is the epoch, so
- * a log the room lost and started again is a new lineage, and the author's ledger stops counting
- * what the room signed out of the old one as soon as it hears from the new one (D28 §2).
+ * never signed. The incarnation is the epoch, so a log the room lost and started again is a new
+ * lineage: the author's ledger stops counting what the room signed out of the old one when the
+ * new one's `hello` reaches it over a sealed link, which names the room's key (D28 §2), and at the
+ * latest when the new one signs to it.
  *
  * @example
  * const receipts = createRoomReceipts(state, { every: Temporal.Duration.from({ seconds: 1 }) });
@@ -110,6 +117,8 @@ export function createRoomReceipts(
   room: Pick<RoomState, "clients" | "identity" | "epoch" | "now"> & {
     /** Per author, the run the log holds from its first event with no hole (`heldRuns`). */
     readonly held: () => Cursors;
+    /** The authors compaction trimmed before this open (`compactedBelow`): never signed for. */
+    readonly trimmed: Cursors;
   },
   options: RoomCustodyOptions = {},
 ): RoomReceipts {
@@ -122,7 +131,7 @@ export function createRoomReceipts(
 
   const sign = (author: PeerId): void => {
     const client = room.clients.get(author);
-    const through = room.held().get(author);
+    const through = room.trimmed.has(author) ? undefined : room.held().get(author);
     if (client === undefined || through === undefined || signed.get(author) === through) return;
     const wire = issueReceipt(room.identity, {
       author,

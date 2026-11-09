@@ -58,6 +58,12 @@ export interface TransportContext {
    */
   readonly onRefusal?: BridgeOptions["onRefusal"];
   /**
+   * A holder proved, on a link, which lineage of its store it speaks from now (D28 §2): a relay
+   * room's `hello` names its epoch under its key. What it signed out of any other lineage is void.
+   * Absent, those receipts stop counting only when the holder next signs.
+   */
+  readonly onLineage?: (holder: PeerId, incarnation: string) => void;
+  /**
    * A join completed on some link (RFC-0019): state arrived instead of history. What
    * `$recovery.rebuild` listens to, and what tells it whether anything vouched for the rows.
    */

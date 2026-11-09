@@ -182,29 +182,38 @@ describe("the relay room signs its own custody (D28, U38)", () => {
 
   test("a host asked to sign needs a key of its own; a room whose store brings its key signs nothing", async () => {
     const custody = { every: EVERY };
-    const openRoomStore = () =>
-      Promise.resolve({
+    let opened = 0;
+    const openRoomStore = () => {
+      opened += 1;
+      return Promise.resolve({
         store: createMemoryEventStore(),
         epoch: "epoch-1",
         durable: true,
         identity: createIdentity(seed(9)).unwrap(),
         release: () => undefined,
       });
+    };
     expect(() => createRelayHost({ openRoomStore, custody })).toThrow("no configured key");
-    const host = createRelayHost({ openRoomStore, custody, identity: ROOM_KEY });
+    const idleAfter = Temporal.Duration.from({ milliseconds: 20 });
+    const host = createRelayHost({ openRoomStore, custody, identity: ROOM_KEY, idleAfter });
     const author = peer(40, "acct_a");
     const ledger = keeping();
     const warned = spyOn(console, "warn").mockImplementation(() => undefined);
     const held = await host.acquire("main");
     // said where an operator reads it, not dropped: the room was asked to sign and will not
     expect(warned.mock.calls.flat().join(" ")).toContain("signs no custody");
-    warned.mockRestore();
     const { dial } = dialTo(held.room);
     await attach({ ...author.context, onReceipt: ledger.onReceipt }, dial);
     await write(author, "n1", "one");
     await tick(WINDOWS);
     expect(ledger.kept).toHaveLength(0);
     held.release();
+    // gone idle and opened again: said once, not at every open
+    await tick(durationMs(idleAfter) * 4);
+    (await host.acquire("main")).release();
+    expect(opened).toBe(2);
+    expect(warned.mock.calls.filter((call) => String(call[0]).includes("main"))).toHaveLength(1);
+    warned.mockRestore();
     await host.close();
   });
 });
