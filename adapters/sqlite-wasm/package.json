@@ -23,7 +23,9 @@
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
     "@types/bun": "catalog:",
+    "playwright": "^1.62.1",
     "typescript": "catalog:",
+    "vite": "catalog:",
     "vite-plus": "catalog:"
   }
 }
