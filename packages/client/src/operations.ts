@@ -1,4 +1,4 @@
-import type { Engine, StoreFailure } from "@syncmesh/engine";
+import type { Cursors, Engine, StoreFailure } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type {
@@ -103,6 +103,12 @@ export interface OpenedOperations {
   /** A verified refusal of one of this device's writes (D32), handed to the transports likewise. */
   readonly refused: (refusal: RefusalReceipt) => void;
   /**
+   * A holder proved which lineage of its store it speaks from now and what it holds (D28 §2): what
+   * it signed out of any other, or of this device's writes above `held`, stops counting. Handed to
+   * the transports likewise.
+   */
+  readonly relineaged: (holder: PeerId, incarnation: string, held: Cursors) => void;
+  /**
    * The store a writer must be given: the caller's rows, plus the notification a local commit
    * owes its listeners. Handing the bare store to a writer instead is how a record lands that
    * nothing watching the ledger ever hears about.
@@ -115,9 +121,16 @@ export interface WiredOperations {
   /** What every handle's writer needs threaded in ({@link HandleExtras}). */
   readonly extras: HandleExtras;
   readonly view?: OperationsView;
-  /** Absent for a mesh over a bare event store: nowhere to put a vouch, so none is asked for. */
-  readonly vouched?: (receipt: CustodyReceipt) => void;
-  readonly refused?: (refusal: RefusalReceipt) => void;
+  /**
+   * Where the transports hand what arrives about this device's own writes, under the
+   * `TransportContext` names. Absent for a mesh over a bare event store: nowhere to put a vouch,
+   * so none is asked for.
+   */
+  readonly custody?: {
+    readonly onReceipt: (receipt: CustodyReceipt) => void;
+    readonly onRefusal: (refusal: RefusalReceipt) => void;
+    readonly onLineage: (holder: PeerId, incarnation: string, held: Cursors) => void;
+  };
   readonly stop: () => void;
 }
 
@@ -140,8 +153,11 @@ export function wireOperations(deps: {
   return {
     extras,
     view: opened.view,
-    vouched: opened.vouched,
-    refused: opened.refused,
+    custody: {
+      onReceipt: opened.vouched,
+      onRefusal: opened.refused,
+      onLineage: opened.relineaged,
+    },
     stop: opened.stop,
   };
 }
@@ -234,7 +250,8 @@ export function openOperations(deps: {
           receipt.issuedAt.epochMilliseconds,
         )
         .then((written) => {
-          // evidence, not silence: the holder re-vouches on the next exchange either way
+          // evidence, not silence: a holder signs again only when its run moves or this device
+          // sits down again (U38), so a lost row stays lost until then
           if (written.isErr()) console.warn(`vouch for ${receipt.holder} failed:`, written.error);
           else changed();
         }),
@@ -256,11 +273,27 @@ export function openOperations(deps: {
           refusal.issuedAt.epochMilliseconds,
         )
         .then((written) => {
-          // evidence, not silence: the refuser repeats it on the next exchange while it is parked
+          // evidence, not silence: the refuser says it again once per seating while it is parked
+          // (D32, U38), so a lost row comes back when this device next sits down
           if (written.isErr())
             console.warn(`refusal from ${refusal.refuser} failed:`, written.error);
           else changed();
         }),
+    );
+  };
+
+  /**
+   * A holder's proven lineage, made durable: its vouches out of any other, and those for this
+   * device's writes above what it holds now, are forgotten, in arrival order with the vouches
+   * themselves, so a receipt that came after the `hello` is kept.
+   */
+  const relineaged = (holder: PeerId, incarnation: string, held: Cursors): void => {
+    inOrder(() =>
+      store.retireLineages(holder, incarnation, self, held.get(self)).then((written) => {
+        // evidence, not silence: the holder's stale vouches keep counting until it next signs
+        if (written.isErr()) console.warn(`lineage of ${holder} not recorded:`, written.error);
+        else changed();
+      }),
     );
   };
 
@@ -306,6 +339,7 @@ export function openOperations(deps: {
     store: recording,
     vouched,
     refused,
+    relineaged,
     view: {
       get: openRef,
       byEvent: (peer, seq) => store.byEvent(peer, seq),

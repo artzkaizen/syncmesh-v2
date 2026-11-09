@@ -9,6 +9,7 @@ import type { Gate } from "./admission.js";
 import type { BlobKeeper } from "./blob-keeper.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { Budget, RelayLimits } from "./limits.js";
+import type { RoomReceipts } from "./room-receipts.js";
 import type { RelaySocket, Sender } from "./sender.js";
 import type { RelayTelemetry } from "./telemetry.js";
 import type { RoomTrust } from "./trust.js";
@@ -57,6 +58,8 @@ export interface RoomState {
   readonly versions: readonly number[];
   /** The key this room opens each sealed link with (D36): what its hello is signed by. */
   readonly identity: Identity;
+  /** The room's own custody receipts (U38); absent, the room signs nothing. */
+  readonly receipts: RoomReceipts | undefined;
   /** What one socket may spend before the relay hangs up on it: frame size and rate. */
   readonly limits: RelayLimits;
   /**

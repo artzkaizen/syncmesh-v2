@@ -766,7 +766,9 @@ impl RelayLink {
             | RelayFrame::BlobPut { .. }
             | RelayFrame::BlobGet { .. }
             // this client keeps no write ledger, so a refusal of its write has nowhere to land
-            | RelayFrame::Refusal { .. } => {}
+            | RelayFrame::Refusal { .. }
+            // and signs no refusals, so a new seating has nothing for it to say again
+            | RelayFrame::Seated { .. } => {}
         }
     }
 

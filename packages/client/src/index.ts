@@ -59,7 +59,7 @@ export type {
   SweepRefusal,
   SweepReport,
 } from "./sweep.js";
-export { createSweep, sweepFor } from "./sweep.js";
+export { createSweep, createMeshSweep } from "./sweep.js";
 export { createHandleTally } from "./inspect.js";
 export type { SyncState } from "./sync-state.js";
 export type { GrantsRestored, IssueRequest, MeshGrants, StandingOf } from "./grants.js";

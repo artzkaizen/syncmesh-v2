@@ -1,3 +1,4 @@
+import type { Cursors } from "@syncmesh/engine";
 import type { Engine, Interest, Narrowed, PurgeScope, Unsubscribe } from "@syncmesh/engine";
 import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
@@ -16,8 +17,7 @@ import type { FrameLink } from "./link.js";
 import type { TransportCondition, TransportKind } from "./medium.js";
 import type { PeerSessions, SessionLink } from "./peer-session.js";
 import type { ReadGate } from "./read-gate.js";
-import type { RouteMessage } from "./route-scorer.js";
-import type { RouteProfile } from "./route-scorer.js";
+import type { RouteMessage, RouteProfile } from "./route-scorer.js";
 import type { RouteTable } from "./routes.js";
 import type { Upgrader } from "./upgrade.js";
 
@@ -57,6 +57,15 @@ export interface TransportContext {
    * why. Absent, refusals are still checked on arrival and then dropped.
    */
   readonly onRefusal?: BridgeOptions["onRefusal"];
+  /**
+   * A holder proved, on a link, which lineage of its store it speaks from now and what that store
+   * holds (D28 §2): a relay room's `hello` names its epoch and its cursors under its key. What it
+   * signed out of any other lineage is void, and so is what it signed out of this one above
+   * `held` — a log that came back shorter under the same epoch (a restored backup, a commit the
+   * disk lost) no longer holds it. Absent, those receipts stop counting only when the holder next
+   * signs.
+   */
+  readonly onLineage?: (holder: PeerId, incarnation: string, held: Cursors) => void;
   /**
    * A join completed on some link (RFC-0019): state arrived instead of history. What
    * `$recovery.rebuild` listens to, and what tells it whether anything vouched for the rows.

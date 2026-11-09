@@ -38,7 +38,7 @@ import { openRecovery, recoveryDeps } from "./recovery.js";
 import { followPhases } from "./session-marks.js";
 import { bootSettings, checkTrust, splitStorage } from "./settings.js";
 import { createStatus } from "./status.js";
-import { sweepFor } from "./sweep.js";
+import { createMeshSweep } from "./sweep.js";
 import { createSyncStates } from "./sync-state.js";
 import { createSynced } from "./synced.js";
 import { followTelemetry } from "./telemetry.js";
@@ -155,7 +155,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   const on = meterHandles<D>(tally, openHandles<C, D, PC>(schema, booted, wired.extras));
   const flush = createFlush({ transports: () => links.list() });
   const snapshots = createHub<SnapshotInstalled>();
-  const swept = sweepFor({ self: identity.peerId, grants, over: deps.sweep });
+  const swept = createMeshSweep({ self: identity.peerId, grants, over: deps.sweep });
   const rescue = recoveryDeps(engine, identity.peerId, snapshots, () => links.list());
   const recovery = openRecovery(engine, { ...rescue, ...omitUndefined({ stores: swept.stores }) });
   const internal = openInternal({ engine, self: identity.peerId });
@@ -185,11 +185,8 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     // the two halves of signed custody (D28): what this device can vouch for out of its own
     // store, and where a peer's vouch for this device's writes lands. A mesh over a bare event
     // store has neither, and passes neither, rather than passing a sink with nowhere to write
-    ...omitUndefined({
-      incarnation: booted.incarnation,
-      onReceipt: wired.vouched,
-      onRefusal: wired.refused,
-    }),
+    ...omitUndefined({ incarnation: booted.incarnation }),
+    ...wired.custody,
     onSnapshot: (installed) => snapshots.emit(installed),
     servesAuthority: trust?.authority === identity.peerId,
     // the gated tables, which reach a device only through the authority's gate (D24)

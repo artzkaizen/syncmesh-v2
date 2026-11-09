@@ -97,7 +97,15 @@ export interface CoverageTracker {
   readonly ahead: () => Ahead;
 }
 
-export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTracker {
+/**
+ * @param logged - Synced events the log holds at or below the cursors, noted into the held run
+ *   alone: what a scoped device folded past a hole before it restarted, which the persisted run
+ *   cannot say because it is contiguous ({@link heldBelowCursors}).
+ */
+export function trackCoverage(
+  initial: Coverage = EMPTY_COVERAGE,
+  logged: readonly Pick<SyncEvent, "peerId" | "seqNum" | "local">[] = [],
+): CoverageTracker {
   const scopes = { synced: new Map<PeerId, Chain>(), local: new Map<PeerId, Chain>() };
   // set only by `adopt`: folding an event is evidence of that event and of nothing about a slice
   let scope = initial.scope;
@@ -112,6 +120,8 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
   // what was withheld and never this, and an unscoped one raises both, so unscoped they agree
   const held = new Map<PeerId, Chain>();
   seed(held, heldRuns(initial));
+  for (const event of logged)
+    if (event.local !== true) noteIn(authorChain(held, event.peerId), event.seqNum);
 
   const raise = (chains: Map<PeerId, Chain>, peer: PeerId, seq: SeqNum): void => {
     const chain = authorChain(chains, peer);
@@ -186,6 +196,14 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
     ahead,
   };
 }
+
+/**
+ * Whether a persisted coverage's held run can stand below its cursors, so that the log between
+ * the two has to be read at boot to rebuild the far side of each hole: only while it is scoped or
+ * says a held run of its own. Unscoped and without one, the held run is the cursors.
+ */
+export const heldBelowCursors = (coverage: Coverage): boolean =>
+  coverage.held !== undefined || coverage.scope !== undefined;
 
 /**
  * Per author, the highest sequence in `(from, to]` this device holds no event for — coverage it

@@ -7,7 +7,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -55,13 +55,14 @@ const until = async (check: () => Promise<boolean>, ms = 5000): Promise<boolean>
   return check();
 };
 
-const open = async (url: string, device: Identity, now: Temporal.Instant) =>
+/** `url` is read per dial: a relay that comes back elsewhere is dialled where it is now. */
+const open = async (url: () => string, device: Identity, now: Temporal.Instant) =>
   (
     await createMesh({
       schema: schema(),
       identity: device,
       now: () => now,
-      transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
+      transports: [relayTransport({ dial: () => webSocketDial(url())(), reconnectMs: 20 })],
       storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
       trust: { issuer: issuer.peerId },
     })
@@ -72,8 +73,8 @@ describe("the author's ledger over a relay (D32, U17)", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-relay-custody-"));
     const relay = await startRelay(0, { dataDir, keepaliveMs: 60_000 });
     try {
-      const a = await open(relay.url, deviceA, T0);
-      const b = await open(relay.url, deviceB, LATER);
+      const a = await open(() => relay.url, deviceA, T0);
+      const b = await open(() => relay.url, deviceB, LATER);
       a.grants.register(grantFor(deviceA, "acct_a", T0)).unwrap();
       a.grants.register(grantFor(deviceB, "acct_b", LATER)).unwrap();
       b.grants.register(grantFor(deviceB, "acct_b", LATER)).unwrap();
@@ -104,6 +105,134 @@ describe("the author's ledger over a relay (D32, U17)", () => {
     } finally {
       await relay.stop();
       rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the relay room as a holder (D28, U38)", () => {
+  test("a room that signs custody empties the author's sole-custody list for what it keeps", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-relay-holder-"));
+    const relayKey = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 200 + i)).unwrap();
+    const relay = await startRelay(0, {
+      dataDir,
+      keepaliveMs: 60_000,
+      identity: relayKey,
+      custody: { every: Temporal.Duration.from({ milliseconds: 50 }) },
+    });
+    try {
+      const a = await open(() => relay.url, deviceA, T0);
+      a.grants.register(grantFor(deviceA, "acct_a", T0)).unwrap();
+      await a.ready();
+      await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n1", body: "hello" });
+      const ledger = a.operations ?? panicNoLedger();
+      // no other device in the room: until the room signs, this device is the only holder
+      expect(await until(async () => (await ledger.soleCustody()).unwrap().length === 0)).toBe(
+        true,
+      );
+      // SAFETY: this device's first write, so its event is sequence 1 — a branded integer
+      const first = 1 as SeqNum;
+      const vouched = (await ledger.vouchesOf(deviceA.peerId, first)).unwrap();
+      expect(vouched.map((v) => v.holder)).toEqual([relay.peerId]);
+      await a.stop();
+    } finally {
+      await relay.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a relay room that lost its log (D28 §2, U38)", () => {
+  test("what it signed out of the old log stops counting at the new one's hello, before it signs again", async () => {
+    const lost = mkdtempSync(join(tmpdir(), "syncmesh-relay-lost-"));
+    const dirs = [lost];
+    const relayKey = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 200 + i)).unwrap();
+    const signing = await startRelay(0, {
+      dataDir: lost,
+      keepaliveMs: 60_000,
+      identity: relayKey,
+      custody: { every: Temporal.Duration.from({ milliseconds: 50 }) },
+    });
+    let url = signing.url;
+    let relay = signing;
+    try {
+      const a = await open(() => url, deviceA, T0);
+      a.grants.register(grantFor(deviceA, "acct_a", T0)).unwrap();
+      await a.ready();
+      await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n1", body: "hello" });
+      const ledger = a.operations ?? panicNoLedger();
+      const sole = async () => (await ledger.soleCustody()).unwrap().length;
+      expect(await until(async () => (await sole()) === 0)).toBe(true);
+
+      // the same key over an empty log: a new epoch, and a room that signs nothing, so only its
+      // hello can retire what the old log's receipt said
+      await signing.stop();
+      const emptied = mkdtempSync(join(tmpdir(), "syncmesh-relay-lost-"));
+      dirs.push(emptied);
+      relay = await startRelay(0, { dataDir: emptied, keepaliveMs: 60_000, identity: relayKey });
+      url = relay.url;
+      expect(relay.peerId).toBe(signing.peerId);
+      expect(await until(async () => (await sole()) === 1)).toBe(true);
+      // SAFETY: this device's first write, so its event is sequence 1 — a branded integer
+      const first = 1 as SeqNum;
+      expect((await ledger.vouchesOf(deviceA.peerId, first)).unwrap()).toEqual([]);
+      await a.stop();
+    } finally {
+      await relay.stop();
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a relay room restored from a backup (D28 §2)", () => {
+  test("what it signed past the backup stops counting at its hello, under the same epoch", async () => {
+    const live = mkdtempSync(join(tmpdir(), "syncmesh-relay-restored-"));
+    const backup = mkdtempSync(join(tmpdir(), "syncmesh-relay-backup-"));
+    const relayKey = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 200 + i)).unwrap();
+    const signing = () =>
+      startRelay(0, {
+        dataDir: live,
+        keepaliveMs: 60_000,
+        identity: relayKey,
+        custody: { every: Temporal.Duration.from({ milliseconds: 50 }) },
+      });
+    let relay = await signing();
+    let url = relay.url;
+    try {
+      const a = await open(() => url, deviceA, T0);
+      a.grants.register(grantFor(deviceA, "acct_a", T0)).unwrap();
+      await a.ready();
+      const db = a.on("org:acme").unwrap().db;
+      await db.insert(notes).values({ id: "n1", body: "hello" });
+      const ledger = a.operations ?? panicNoLedger();
+      const sole = async () => (await ledger.soleCustody()).unwrap().length;
+      expect(await until(async () => (await sole()) === 0)).toBe(true);
+
+      // the backup holds the first write and the epoch it was signed under
+      await relay.stop();
+      cpSync(live, backup, { recursive: true });
+      relay = await signing();
+      url = relay.url;
+      await db.insert(notes).values({ id: "n2", body: "again" });
+      expect(await until(async () => (await sole()) === 0)).toBe(true);
+
+      // restored, under the same epoch and a room that signs nothing: only its hello's cursor can
+      // say it no longer holds the second write
+      await relay.stop();
+      relay = await startRelay(0, { dataDir: backup, keepaliveMs: 60_000, identity: relayKey });
+      url = relay.url;
+      expect(await until(async () => (await sole()) === 1)).toBe(true);
+      // SAFETY: this device's second write, so its event is sequence 2 — a branded integer
+      const second = 2 as SeqNum;
+      expect((await ledger.vouchesOf(deviceA.peerId, second)).unwrap()).toEqual([]);
+      // SAFETY: its first, sequence 1, which the restored log still holds
+      const first = 1 as SeqNum;
+      expect((await ledger.vouchesOf(deviceA.peerId, first)).unwrap().map((v) => v.holder)).toEqual(
+        [relay.peerId],
+      );
+      await a.stop();
+    } finally {
+      await relay.stop();
+      for (const dir of [live, backup]) rmSync(dir, { recursive: true, force: true });
     }
   });
 });

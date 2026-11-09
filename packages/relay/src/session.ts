@@ -356,7 +356,8 @@ export function wireSession(
     } else if (frame.kind === "error") {
       hooks.onRefused(frame.code, frame.floor);
       dialed.close();
-    } else if (!custody.take(frame) && frame.kind === "session") onSession(frame.frame);
+    } else if (frame.kind === "seated") custody.seated(frame.peer);
+    else if (!custody.take(frame) && frame.kind === "session") onSession(frame.frame);
     // ka and unknown: the rearm above was the whole point
   });
 

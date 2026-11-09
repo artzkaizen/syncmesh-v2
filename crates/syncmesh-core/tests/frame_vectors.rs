@@ -328,8 +328,8 @@ fn relay_control_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     tags.sort();
     assert_eq!(
         tags,
-        (8..=22).collect::<Vec<u64>>(),
-        "control tags 8–22, no gaps"
+        (8..=23).collect::<Vec<u64>>(),
+        "control tags 8–23, no gaps"
     );
 }
 
@@ -475,6 +475,8 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
                 "wireHex",
             )),
         ),
+        // the room's word that a joiner took its seat (U38)
+        (33, relay_frames::seated_frame(&p)),
     ];
     for (i, b) in expected {
         assert_eq!(to_hex(&b), to_hex(&wires[i]), "vector {i}");

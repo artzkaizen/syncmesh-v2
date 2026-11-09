@@ -26,6 +26,7 @@ import {
   kaFrame,
   pageFrame,
   relayedFrame,
+  seatedFrame,
 } from "@syncmesh/relay";
 import { bytesToHex } from "@syncmesh/wire";
 
@@ -219,6 +220,13 @@ export function relayVectors() {
     ...blobQuotaVectors(),
     ...refusalVectors(CURSORS, FLOOR),
     ...roomRefusalVectors(),
+    {
+      description:
+        "seated, the room's word that a joiner took its seat: each holder says once more what of its writes it refused (U38)",
+      kind: "seated",
+      tag: 23,
+      wireHex: bytesToHex(seatedFrame(PEER)),
+    },
   ];
   return { protocolVersions: [...RELAY_PROTOCOL_VERSIONS], vectors: cases };
 }
