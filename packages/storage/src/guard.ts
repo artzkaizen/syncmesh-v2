@@ -1,7 +1,7 @@
 import type { StoreFailure } from "@syncmesh/engine";
-import type { Result } from "@syncmesh/result";
 import type { Table } from "@syncmesh/schema";
 
+import { Result } from "@syncmesh/result";
 import { parseTableName } from "@syncmesh/schema";
 
 import type { SqlDriver } from "./driver.js";
@@ -73,14 +73,18 @@ export function installGuard(
 
 /**
  * Runs `fn` — the fold's own writes into the app's tables — past the strict guard, inside the
- * caller's transaction. The guard is back at rest after it, thrown or not.
+ * caller's transaction. The guard is back at rest after it, thrown or not, and a throw keeps its
+ * own error.
  */
 export async function folding<T>(driver: SqlDriver, fn: () => Promise<T>): Promise<T> {
   const { capture } = driverDialect(driver);
   await driver.run(capture.fold);
-  try {
-    return await fn();
-  } finally {
-    await driver.run(capture.unfold);
+  const ran = await Result.tryPromise({ try: fn, catch: (cause) => cause });
+  if (ran.isErr()) {
+    // best effort: an aborted Postgres transaction refuses it, and its rollback resets the setting
+    (await Result.tryPromise(() => driver.run(capture.unfold))).unwrapOr(undefined);
+    throw ran.error;
   }
+  await driver.run(capture.unfold);
+  return ran.value;
 }

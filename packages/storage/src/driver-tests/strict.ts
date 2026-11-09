@@ -225,6 +225,44 @@ const postgresStrictCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       equal(await rows(driver), [], "nothing landed");
     },
   },
+  {
+    name: "strict: a fold that aborts its transaction fails with its own error, and leaves the guard at rest (Postgres)",
+    run: async () => {
+      const driver = await openDriver("strict-fold-aborts");
+      if (driver.dialect !== "postgres" || driver.transaction === undefined) return;
+      const L = sqlText(driver);
+      (await installCapture(driver, [jobs])).unwrap();
+      const failed = await Result.tryPromise({
+        try: () =>
+          inTransaction(driver, () =>
+            folding(driver, async () => {
+              await driver.run(
+                `INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'x', 1, ${L.F})`,
+              );
+              await driver.run(`SELECT 1 / 0`);
+            }),
+          ),
+        catch: (cause) => String(cause),
+      });
+      equal(
+        failed.match({
+          ok: () => "applied",
+          err: (message) => (message.includes("division by zero") ? "its own" : message),
+        }),
+        "its own",
+        "the fold's own error",
+      );
+      equal(await count(driver, L.guard), 0, "at rest");
+      equal(await rows(driver), [], "nothing landed");
+      equal(
+        await refused(() =>
+          driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j2', 'raw', 1, ${L.F})`),
+        ),
+        "refused",
+        "an unarmed write after it",
+      );
+    },
+  },
 ];
 
 const count = async (driver: SqlDriver, sql: string) =>

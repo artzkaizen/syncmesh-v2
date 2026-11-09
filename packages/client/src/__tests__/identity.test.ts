@@ -1,3 +1,4 @@
+import { Result } from "@syncmesh/result";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { bytesToHex, hexToBytes, openPayload } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -399,7 +400,10 @@ describe("createWebCryptoVault", () => {
     const [key] = holder.keys.values();
     expect(key?.extractable).toBe(false);
     // the attack a script on the page would try: export the key and take it with the database
-    if (key !== undefined) expect(crypto.subtle.exportKey("raw", key)).rejects.toThrow();
+    if (key !== undefined) {
+      const exported = await Result.tryPromise(() => crypto.subtle.exportKey("raw", key));
+      expect(exported.isErr()).toBe(true);
+    }
     const again = (
       await deviceIdentity(driverOn(path), { vault: createWebCryptoVault(holder) })
     ).unwrap();
