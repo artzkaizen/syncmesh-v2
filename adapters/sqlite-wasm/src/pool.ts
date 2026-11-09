@@ -363,7 +363,7 @@ const slotsHeld = async (directory: string): Promise<boolean> => {
  * Waits, under `"wait"`, until no other context holds a slot of `directory`'s pool; under
  * `"refuse"`, answers {@link OpfsPoolHeld} at once if one does.
  */
-const reaped = async (
+export const reaped = async (
   directory: string,
   when: WhenPoolHeld,
 ): Promise<Result<void, OpfsPoolHeld>> => {
@@ -437,10 +437,18 @@ const inTurn = <T>(directory: string, step: () => Promise<T>): Promise<T> => {
  * leaves the pool alone.
  */
 export const releaseWhenIdle = (directory: string, release: () => void) => {
-  // deferred, a give-back that throws has no caller left to answer; `pairOn` closes what it opened
-  // so that `pauseVfs` has no open handle to throw over
-  if (turns.has(directory)) void inTurn(directory, async () => release());
-  else release();
+  if (!turns.has(directory)) {
+    release();
+    return;
+  }
+  // `pairOn` closes what it opened so that `pauseVfs` has no open handle to throw over
+  void inTurn(directory, async () => said(directory, "was not given back", release));
+};
+
+/** A give-back that throws with no caller left to answer, said instead of dropped. */
+const said = (directory: string, what: string, giveBack: () => void) => {
+  const given = Result.try({ try: giveBack, catch: (cause) => cause });
+  if (given.isErr()) console.warn(`[syncmesh] the OPFS pool in ${directory} ${what}`, given.error);
 };
 
 async function takePool(
@@ -452,21 +460,16 @@ async function takePool(
   const leased = await takeLease(directory, when);
   if (leased.isErr()) return leased;
   // a lease this call did not take is another open's, which is still using it
-  const giveBack = () => {
+  const refused = <R>(failure: R) => {
     if (leased.value) dropLease(directory);
+    return failure;
   };
   if (!(await awake(directory))) {
     const free = await reaped(directory, when);
-    if (free.isErr()) {
-      giveBack();
-      return free;
-    }
+    if (free.isErr()) return refused(free);
   }
   const held = await poolIn(install, directory, options.capacity);
-  if (held.isErr()) {
-    giveBack();
-    return held;
-  }
+  if (held.isErr()) return refused(held);
   const pool = held.value;
   // woken before it is measured: a paused pool holds no handles and so counts no slots, and asked
   // for its minimum then it adds a full set of new ones, and still has its VFS unregistered
@@ -475,18 +478,17 @@ async function takePool(
       try: () => pool.util.unpauseVfs(),
       catch: poolFailure(directory),
     });
-    if (woken.isErr()) {
-      giveBack();
-      return woken;
-    }
+    if (woken.isErr()) return refused(woken);
   }
   const reserved = await Result.tryPromise({
     try: () => pool.util.reserveMinimumCapacity(options.capacity),
     catch: poolFailure(directory),
   });
   if (reserved.isErr()) {
-    giveBack();
-    return reserved;
+    // the install or the wake took every slot's handle; with no store of this thread on the pool,
+    // they go back with the lease, or the next context to take it finds its slots held by this one
+    if (pool.open === 0) said(directory, "kept its handles", () => pool.util.pauseVfs());
+    return refused(reserved);
   }
   pool.open += 1;
   return held;
