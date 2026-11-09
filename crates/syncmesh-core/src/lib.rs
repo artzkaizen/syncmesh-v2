@@ -27,10 +27,10 @@ pub mod strategy;
 pub use apply::{apply_change, merge_record};
 pub use cbor::{Key, Value, decode as decode_cbor, encode as encode_cbor};
 pub use doc::{
-    DocBlobRef, DocChange, DocColumns, DocUpdate, GENESIS_RULE, Genesis, Id16, LineageCell,
-    LineageCellRefused, SETTLED_RULE, Settled, derive_lineage, doc_change_id, geneses_of,
-    lineage_cell, lineage_of, lineage_rule, parse_lineage_cells, read_lineage_cell, settle_walk,
-    winning_lineage, with_doc_columns,
+    DocBlobRef, DocChange, DocColumns, DocUpdate, GENESIS_RULE, Genesis, Id16, LINEAGE_RULE,
+    LineageCell, LineageCellRefused, SETTLED_RULE, Settled, derive_lineage, doc_change_id,
+    geneses_of, lineage_cell, lineage_of, lineage_rule, parse_lineage_cells, read_lineage_cell,
+    settle_walk, winning_lineage, with_doc_columns,
 };
 pub use doc_checkpoint::{DocCheckpoint, decode_doc_checkpoint, sign_doc_checkpoint};
 pub use envelope::{VerifiedEvent, decode_and_verify, sign_event, split_envelope};

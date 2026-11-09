@@ -11,7 +11,7 @@ import { compareStamp } from "./stamp.js";
 import { strategies } from "./strategy.js";
 
 /**
- * The lineage rule (RFC-0023 §5.3, §16.1; gaps U21): the walk that picks a document's winner,
+ * The lineage rule (RFC-0023 §5.3, §16.1; gaps U21, U39): the walk that picks a document's winner,
  * the anchor that settles it, and the cell's join.
  *
  * @module
@@ -97,9 +97,10 @@ export function settleWalk(
  * same cell, and the winner is read from it by {@link winningLineage}, never stored. Dropping is a
  * property of each genesis's stamp against the one anchor every peer converges on, so a cell
  * trimmed here and a cell not yet trimmed there join to the same value. Two entries for one
- * lineage only come from an author who signed two events at one sequence; the first by
- * {@link firstGenesis} is kept, and with an anchor stamped between the two that is the one case
- * where arrival order shows (RFC-0023 §16.1). The cell's stamp is the later of the two.
+ * lineage only come from an author who signed two events at one sequence (equivocation, gaps
+ * U39); the later by {@link firstGenesis} is kept, which an anchor drops no sooner than the
+ * earlier, so the cell — and the winner read from it — is the same in every order the two copies
+ * and any anchor meet in (RFC-0023 §16.1, rule 3). The cell's stamp is the later of the two.
  */
 export const lineageRule: Strategy = (incoming, current) => {
   const held = readLineageCell(current?.value);
@@ -143,7 +144,7 @@ export function withDocColumns(merge: MergeSpec | undefined, docs: DocColumns): 
 
 /**
  * The lineage cell a genesis writes: the one genesis, stamped with it, and the anchor it settles
- * the walk at when it carries one (`[2, { genesis }, anchor]`, gaps U21).
+ * the walk at when it carries one (`[3, { genesis }, anchor]`, gaps U21).
  */
 export const lineageCell = (genesis: Genesis, settles?: SettledLineage): Cell => ({
   value: writeCell([genesis], settles),

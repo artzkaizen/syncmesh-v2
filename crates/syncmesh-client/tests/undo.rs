@@ -214,6 +214,7 @@ fn a_write_of_document_updates_alone_is_refused_and_stays_revertable() {
         update: DocUpdate::Bytes(vec![1]),
         genesis: false,
         legacy: false,
+        rule: None,
         parent: None,
         settles: None,
     });
@@ -495,6 +496,7 @@ fn a_delete_of_a_replaced_documents_row_comes_back_with_its_lineage() {
             update: DocUpdate::Bytes(vec![1]),
             genesis: true,
             legacy: false,
+            rule: None,
             parent: None,
             settles: None,
         }),

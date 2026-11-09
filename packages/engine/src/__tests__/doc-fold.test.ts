@@ -3,6 +3,7 @@ import {
   getRecord,
   docLineage,
   isJsonArray,
+  LINEAGE_RULE,
   parseAdapterId,
   parsePartitionKey,
   readLineageCell,
@@ -428,8 +429,12 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
 
   test("a snapshot holding a cell of another rule's version is refused whole: nothing joins, nothing is adopted", async () => {
     const { a, r } = await scenario();
+    const anchor = [deriveLineage(PEER_A, seq(2), 0), 1, 0, PEER_A];
     for (const [value, version] of [
-      [[2, untagged(a)], 2],
+      // rules 1 and 2 kept an equivocated lineage's first copy (gaps U39)
+      [[1, untagged(a)], 1],
+      [[2, untagged(a), anchor], 2],
+      [[4, untagged(a)], 4],
       [untagged(a), null],
       [deriveLineage(PEER_A, seq(2), 0), null],
     ] as const) {
@@ -540,6 +545,36 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
     expect(cached.get(NOTES)?.get(N1)?.cells.get(CONTENT)?.value).toEqual(
       getRecord(a.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value,
     );
+  });
+
+  test("state an earlier rule kept (a cell tagged 1 or 2) is rebuilt from the log under rule 3 (gaps U39)", async () => {
+    for (const earlier of [1, 2] as const) {
+      const stateStore = createMemoryStateStore();
+      const a = setup(PEER_A, 100, { docs: DOCS, validate, stateStore });
+      await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+      await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+      const anchor = [deriveLineage(PEER_A, seq(2), 0), 1, 0, PEER_A];
+      const kept = earlier === 1 ? [1, untagged(a)] : [2, untagged(a), anchor];
+      (await stateStore.commit([foreign(a, kept)], a.engine.coverage())).unwrap();
+      const errors: EngineError[] = [];
+      const booted = (
+        await openEngine({
+          peerId: PEER_A,
+          clock: fakeClock(500),
+          store: a.store,
+          stateStore,
+          docs: DOCS,
+          validate,
+          onError: (e) => void errors.push(e),
+        })
+      ).unwrap();
+      expect(errors).toMatchObject([{ _tag: "LineageCellRefused", version: earlier }]);
+      const rebuilt = getRecord(booted.state(), NOTES, N1)?.cells.get(CONTENT)?.value;
+      expect(isJsonArray(rebuilt) && rebuilt[0]).toBe(LINEAGE_RULE);
+      expect(docLineage(getRecord(booted.state(), NOTES, N1), CONTENT)).toBe(
+        deriveLineage(PEER_A, seq(2), 0),
+      );
+    }
   });
 });
 

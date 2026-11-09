@@ -5,10 +5,12 @@
  * Every signature here is Ed25519 over a fixed seed, so it is deterministic: a port reproduces the
  * file byte for byte, cores and signatures alike.
  */
-import type { Change, DocChange, SyncEvent } from "@syncmesh/kernel";
+import type { Change, DocChange, PeerId, SyncEvent } from "@syncmesh/kernel";
 
 import {
   type CellValue,
+  GENESIS_RULE,
+  SETTLED_RULE,
   eventId,
   hlcOf,
   parseActionId,
@@ -28,7 +30,8 @@ import {
 } from "@syncmesh/wire";
 
 import { CONTENT, LORO, N1, NOTES, T0 } from "./doc-names.js";
-import { lineageCellVectors, lineageTreeVectors } from "./lineage-trees.js";
+import { lineageCellVectors } from "./lineage-cells.js";
+import { lineageTreeVectors } from "./lineage-trees.js";
 import { wireVectors } from "./vectors.js";
 
 const AUTHOR_SEED = Uint8Array.from({ length: 32 }, (_, i) => 0x40 + i);
@@ -43,12 +46,59 @@ const procedure = (name: string) => name as Procedure;
 const ACTION = parseActionId("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf").unwrap();
 const UNDONE = parseActionId("b0b1b2b3b4b5b6b7b8b9babbbcbdbebf").unwrap();
 
+const seq = (n: number) => parseSeqNum(n).unwrap();
+
+const doc = (extra: Partial<DocChange> = {}): DocChange => ({
+  kind: "doc",
+  table: NOTES,
+  key: N1,
+  column: CONTENT,
+  adapter: LORO,
+  update: { bytes: Uint8Array.of(0x6c, 0x6f, 0x72, 0x6f) },
+  ...extra,
+});
+
+/** An event of `author` at sequence `n`, stamped `T0 + n`. */
+type At = (n: number, extra: Partial<SyncEvent>, changes: readonly Change[]) => SyncEvent;
+
+/**
+ * Geneses of the rule this build writes (gaps U39): 3 in key 5, with no anchor and with one.
+ * The geneses before them were written under rules 1 and 2 and stay frozen as old logs hold them.
+ */
+const ruleThreeEvents = (author: PeerId, at: At): readonly (readonly [string, SyncEvent])[] => [
+  [
+    "a genesis of rule 3 that replaces the seq-7 lineage: 3 in key 5, no anchor (gaps U39)",
+    at(8, { procedure: procedure("notes.replace") }, [
+      doc({
+        lineage: deriveLineage(author, seq(8), 0),
+        genesis: true,
+        parent: deriveLineage(author, seq(7), 0),
+        update: { bytes: Uint8Array.of(10, 11) },
+      }),
+    ]),
+  ],
+  [
+    "a genesis of rule 3 that settles the walk at the seq-6 lineage: 3 in key 5, its anchor in key 7 (gaps U39)",
+    at(9, { procedure: procedure("notes.replace") }, [
+      doc({
+        lineage: deriveLineage(author, seq(9), 0),
+        genesis: true,
+        parent: deriveLineage(author, seq(8), 0),
+        settles: {
+          lineage: deriveLineage(author, seq(6), 0),
+          stamp: { hlc: hlcOf(T0 + 6, 0), peer: author },
+        },
+        update: { bytes: Uint8Array.of(12, 13) },
+      }),
+    ]),
+  ],
+];
+
 export function docVectors() {
   const author = createIdentity(AUTHOR_SEED).unwrap();
   const producer = createIdentity(PRODUCER_SEED).unwrap();
-  const seq = (n: number) => parseSeqNum(n).unwrap();
 
-  const at = (n: number, extra: Partial<SyncEvent>, changes: readonly Change[]): SyncEvent => ({
+  const at: At = (n, extra, changes) => ({
     v: 1,
     id: eventId(author.peerId, seq(n)),
     peerId: author.peerId,
@@ -60,15 +110,6 @@ export function docVectors() {
     ...extra,
   });
 
-  const doc = (extra: Partial<DocChange> = {}): DocChange => ({
-    kind: "doc",
-    table: NOTES,
-    key: N1,
-    column: CONTENT,
-    adapter: LORO,
-    update: { bytes: Uint8Array.of(0x6c, 0x6f, 0x72, 0x6f) },
-    ...extra,
-  });
   const genesisLineage = deriveLineage(author.peerId, seq(3), 1);
 
   const events: readonly (readonly [string, SyncEvent])[] = [
@@ -83,10 +124,15 @@ export function docVectors() {
       ]),
     ],
     [
-      "an insert and a genesis in one event: the lineage derives from change index 1",
+      "an insert and a genesis of rule 1 in one event: the lineage derives from change index 1",
       at(3, { procedure: procedure("notes.replace") }, [
         { kind: "insert", table: NOTES, key: N1, row: new Map([[CONTENT, null]]) },
-        doc({ lineage: genesisLineage, genesis: true, update: { bytes: Uint8Array.of(1, 2, 3) } }),
+        doc({
+          lineage: genesisLineage,
+          genesis: true,
+          rule: GENESIS_RULE,
+          update: { bytes: Uint8Array.of(1, 2, 3) },
+        }),
       ]),
     ],
     ["an update in an action", at(4, { action: ACTION }, [doc()])],
@@ -95,22 +141,24 @@ export function docVectors() {
       at(5, { action: UNDONE, undoOf: ACTION, procedure: procedure("revert") }, [doc()]),
     ],
     [
-      "a genesis that replaces the seq-3 lineage: its parent in key 6 (RFC-0023 §16.1)",
+      "a genesis of rule 1 that replaces the seq-3 lineage: its parent in key 6 (RFC-0023 §16.1)",
       at(6, { procedure: procedure("notes.replace") }, [
         doc({
           lineage: deriveLineage(author.peerId, seq(6), 0),
           genesis: true,
+          rule: GENESIS_RULE,
           parent: genesisLineage,
           update: { bytes: Uint8Array.of(4, 5, 6) },
         }),
       ]),
     ],
     [
-      "a genesis that settles the walk at the seq-3 lineage: rule 2 in key 5, its anchor in key 7 (gaps U21)",
+      "a genesis of rule 2 that settles the walk at the seq-3 lineage: its anchor in key 7 (gaps U21)",
       at(7, { procedure: procedure("notes.replace") }, [
         doc({
           lineage: deriveLineage(author.peerId, seq(7), 0),
           genesis: true,
+          rule: SETTLED_RULE,
           parent: deriveLineage(author.peerId, seq(6), 0),
           settles: {
             lineage: genesisLineage,
@@ -120,6 +168,7 @@ export function docVectors() {
         }),
       ]),
     ],
+    ...ruleThreeEvents(author.peerId, at),
   ];
 
   const lineages = (

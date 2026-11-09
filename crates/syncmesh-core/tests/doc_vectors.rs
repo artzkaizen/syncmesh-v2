@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use syncmesh_core::doc::{
-    DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, Settled, parse_lineage_cells,
+    DocBlobRef, DocChange, DocColumns, DocUpdate, GENESIS_RULE, Id16, SETTLED_RULE, Settled,
+    parse_lineage_cells,
 };
 use syncmesh_core::doc_checkpoint::{DocCheckpoint, encode_doc_checkpoint_core};
 use syncmesh_core::envelope::envelope;
@@ -68,16 +69,27 @@ fn replace_of(
         update,
         genesis,
         legacy: false,
+        rule: None,
         parent,
         settles,
     })
+}
+
+/// A genesis as an earlier version of the lineage rule wrote it: key 5 is `rule`, not 3 (gaps U39).
+fn under(rule: i64, change: Change) -> Change {
+    let Change::Doc(mut d) = change else {
+        panic!("only a doc change is written under a lineage rule");
+    };
+    d.rule = Some(rule);
+    Change::Doc(d)
 }
 
 fn loro() -> DocUpdate {
     DocUpdate::Bytes(b"loro".to_vec())
 }
 
-/// The seven frozen events, built here from scratch.
+/// The nine frozen events, built here from scratch: three geneses under rules 1 and 2, as old logs
+/// hold them, and two under rule 3.
 fn events() -> Vec<SyncEvent> {
     let a = author();
     let at = |n: u64, procedure: &str, changes: Vec<Change>| SyncEvent {
@@ -118,7 +130,10 @@ fn events() -> Vec<SyncEvent> {
                     key: "n1".into(),
                     row: BTreeMap::from([("content".to_owned(), CellValue::Null)]),
                 },
-                doc(Some(genesis), DocUpdate::Bytes(vec![1, 2, 3]), true),
+                under(
+                    GENESIS_RULE,
+                    doc(Some(genesis), DocUpdate::Bytes(vec![1, 2, 3]), true),
+                ),
             ],
         ),
         SyncEvent {
@@ -133,25 +148,56 @@ fn events() -> Vec<SyncEvent> {
         at(
             6,
             "notes.replace",
-            vec![replace_of(
-                Some(derive_lineage(a.peer_id(), seq(6), 0)),
-                DocUpdate::Bytes(vec![4, 5, 6]),
-                true,
-                Some(genesis),
-                None,
+            vec![under(
+                GENESIS_RULE,
+                replace_of(
+                    Some(derive_lineage(a.peer_id(), seq(6), 0)),
+                    DocUpdate::Bytes(vec![4, 5, 6]),
+                    true,
+                    Some(genesis),
+                    None,
+                ),
             )],
         ),
         at(
             7,
             "notes.replace",
+            vec![under(
+                SETTLED_RULE,
+                replace_of(
+                    Some(derive_lineage(a.peer_id(), seq(7), 0)),
+                    DocUpdate::Bytes(vec![7, 8, 9]),
+                    true,
+                    Some(derive_lineage(a.peer_id(), seq(6), 0)),
+                    Some(Settled {
+                        lineage: genesis,
+                        stamp: Stamp::new(Hlc::new(T0 + 3, 0), a.peer_id().clone()),
+                    }),
+                ),
+            )],
+        ),
+        at(
+            8,
+            "notes.replace",
             vec![replace_of(
-                Some(derive_lineage(a.peer_id(), seq(7), 0)),
-                DocUpdate::Bytes(vec![7, 8, 9]),
+                Some(derive_lineage(a.peer_id(), seq(8), 0)),
+                DocUpdate::Bytes(vec![10, 11]),
                 true,
-                Some(derive_lineage(a.peer_id(), seq(6), 0)),
+                Some(derive_lineage(a.peer_id(), seq(7), 0)),
+                None,
+            )],
+        ),
+        at(
+            9,
+            "notes.replace",
+            vec![replace_of(
+                Some(derive_lineage(a.peer_id(), seq(9), 0)),
+                DocUpdate::Bytes(vec![12, 13]),
+                true,
+                Some(derive_lineage(a.peer_id(), seq(8), 0)),
                 Some(Settled {
-                    lineage: genesis,
-                    stamp: Stamp::new(Hlc::new(T0 + 3, 0), a.peer_id().clone()),
+                    lineage: derive_lineage(a.peer_id(), seq(6), 0),
+                    stamp: Stamp::new(Hlc::new(T0 + 6, 0), a.peer_id().clone()),
                 }),
             )],
         ),
@@ -301,7 +347,7 @@ fn every_frozen_lineage_derives_the_same() {
 fn every_frozen_lineage_cell_reaches_the_typescripts_verdict() {
     let file = vectors("doc-vectors.json");
     let cells = file["lineageCells"].as_array().unwrap();
-    assert_eq!(cells.len(), 6);
+    assert_eq!(cells.len(), 8);
     let docs = DocColumns::from([(
         "notes".to_owned(),
         BTreeMap::from([("content".to_owned(), "loro@1".to_owned())]),
