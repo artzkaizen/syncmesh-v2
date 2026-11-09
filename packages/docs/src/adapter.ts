@@ -65,6 +65,18 @@ export interface DocumentAdapter<D> {
   readonly since: (doc: D, version: Uint8Array) => Result<Uint8Array, UpdateRejected>;
   /** Calls `listener` after each local commit; the returned function stops it. */
   readonly watchLocal: (doc: D, listener: () => void) => () => void;
+  /**
+   * One update, made as `replica`, that takes back what `updates` did to `doc` — the undo of a
+   * write (RFC-0023 §9). `doc` holds `updates` and whatever was written after them; the
+   * compensation is made against the document as `updates` left it and merges with everything
+   * since as a concurrent edit would, so later edits by anyone stand. `undefined` when nothing
+   * of `updates` still shows in `doc`. Compensating a compensation is redo.
+   */
+  readonly compensate: (
+    doc: D,
+    updates: readonly Uint8Array[],
+    replica: bigint,
+  ) => Result<Uint8Array | undefined, UpdateRejected>;
 }
 
 /** A document adapter of any library, as a registry holds it. */

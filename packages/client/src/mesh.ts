@@ -255,7 +255,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     delivered: createDelivered(engine, identity.peerId),
     received: createReceived(engine),
     synced: createSynced(() => links.list()),
-    revert: (id) => engine.revert(id),
+    revert: (id) => docs?.documents.revert(id) ?? engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
     internal,
     recovery,

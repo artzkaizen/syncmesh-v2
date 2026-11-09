@@ -48,7 +48,7 @@ import { createHub, type Unsubscribe } from "./listeners.js";
 import { type PurgeApi, createPurge } from "./purge.js";
 import { createQuarantine, createRetries, withRetry } from "./quarantine.js";
 import { recentHeaders } from "./recent.js";
-import { createRevert } from "./revert.js";
+import { createRevert, type DocCompensator } from "./revert.js";
 import { createSnapshotPath } from "./snapshot.js";
 import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
@@ -106,8 +106,13 @@ export interface Engine
    * this is that the row was deleted — the rest wants the event log to join against.
    */
   readonly deletedAt: (table: TableName, key: RowKey) => Stamp | undefined;
-  /** Writes the compensating event for one of this engine's last `undoDepth` writes, in that event's partition. */
-  readonly revert: (id: EventId) => Promise<Result<Reverted, RevertError>>;
+  /**
+   * Writes the compensating event for one of this engine's last `undoDepth` writes, in that
+   * event's partition. Its document updates are compensated by `docs` — a document runtime's
+   * (RFC-0023 §9) — and without it reported `skipped: document`, and a write of documents alone
+   * refused.
+   */
+  readonly revert: (id: EventId, docs?: DocCompensator) => Promise<Result<Reverted, RevertError>>;
   readonly canRevert: (id: EventId) => boolean;
   /**
    * Per author, the highest sequence number below which this engine holds **every** event — the

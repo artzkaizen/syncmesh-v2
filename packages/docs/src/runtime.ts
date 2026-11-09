@@ -1,5 +1,5 @@
 import type { DocAddress, DocCoverStale, FoldBatch, StoreFailure } from "@syncmesh/engine";
-import type { AdapterId, DocColumns, PeerId, Procedure } from "@syncmesh/kernel";
+import type { AdapterId, DocColumns, EventId, PeerId, Procedure } from "@syncmesh/kernel";
 import type { DeriveFailed, Derivers } from "@syncmesh/schema";
 
 import { docKey } from "@syncmesh/engine";
@@ -17,6 +17,7 @@ import type { SealingKeys } from "./sealed-snapshot.js";
 import { columnAdapter, resolveAdapterId } from "./adapter.js";
 import { withBlobs } from "./blobs.js";
 import { installProvisional } from "./checkpoint.js";
+import { createCompensator } from "./compensate.js";
 import { DEFAULT_PACING, createHandles, createRefs } from "./documents.js";
 import { materialise } from "./materialise.js";
 import { createRederive } from "./rederive.js";
@@ -235,6 +236,7 @@ export function createDocuments(options: DocumentsOptions) {
     adapterAt,
   });
 
+  const compensator = createCompensator({ engine, docs, adapters, blobs, fresh });
   const maintain = createMaintain(engine, adapters, materialiseAt, options.onError);
   const unmaintain =
     options.autoMaterialise === false ? () => {} : engine.onFoldBatch((b) => void maintain(b));
@@ -294,6 +296,14 @@ export function createDocuments(options: DocumentsOptions) {
      * syncmesh. Does nothing without `derive`.
      */
     rederive: (address?: DocAddress) => rederive?.rederive(address) ?? Promise.resolve(),
+    /**
+     * Reverts one of the engine's last `undoDepth` writes (`engine.revert`) with its documents
+     * taken back too (RFC-0023 §9): each edit by the adapter's `compensate`, against the document
+     * as committed here, so later edits stand; a `replace()` by a genesis bringing back the
+     * lineage it ended. A document another replace has moved on, or where nothing of the write
+     * still shows, is reported `superseded`. Reverting the revert is redo.
+     */
+    revert: (id: EventId) => engine.revert(id, compensator),
     ...writes,
     stop: () => {
       unmaintain();

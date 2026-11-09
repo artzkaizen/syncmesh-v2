@@ -60,6 +60,8 @@ export interface NodeOptions {
   readonly adapter?: boolean;
   readonly limits?: Partial<DocLimits>;
   readonly onError?: (error: BackgroundError) => void;
+  /** How many of its last writes the engine keeps revertable. */
+  readonly undoDepth?: number;
 }
 
 /** An engine of the mesh with the doc column declared, and the document runtime over it. */
@@ -77,6 +79,7 @@ export function node(n: number, options: NodeOptions = {}) {
     validate,
     docs: DOCS,
     ...(withAdapter && { docAdapters: new Set([LORO_ID]) }),
+    ...(options.undoDepth !== undefined && { undoDepth: options.undoDepth }),
   });
   const documents = createDocuments({
     engine,

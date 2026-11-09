@@ -138,6 +138,7 @@ export type {
 } from "./errors.js";
 export type { Hub, Unsubscribe } from "./listeners.js";
 export type { Reverted, Skipped } from "./undo.js";
+export type { DocCompensation, DocCompensator } from "./revert.js";
 export { createHub } from "./listeners.js";
 export type { Ahead, Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
 export {

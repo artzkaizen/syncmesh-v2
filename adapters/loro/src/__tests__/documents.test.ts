@@ -130,6 +130,46 @@ describe("loro@1 handles: opens that race a read of the log", () => {
   });
 });
 
+describe("loro@1 undo: a revert takes an edit back and keeps everyone else's (RFC-0023 §9, E30 P6)", () => {
+  test("an edit is reverted under a colleague's later edits, and both devices read the same", async () => {
+    const a = node(16, { undoDepth: 8 });
+    const b = node(17, { undoDepth: 8 });
+    await insertNote(a);
+    const link = await linked(a, b);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "Hello");
+    (await da.flush()).unwrap();
+    type(da.value, 5, " world");
+    da.value.getMap("meta").set("tone", "warm");
+    da.value.commit();
+    const action = (await da.flush()).unwrap();
+    await link.flush();
+    // b edits after a's, around it: before it and after it
+    const db = (await b.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(await until(() => body(db.value) === "Hello world")).toBe(true);
+    type(db.value, 0, "> ");
+    type(db.value, body(db.value).length, "!");
+    (await db.flush()).unwrap();
+    await link.flush();
+    expect(await until(() => body(da.value) === "> Hello world!")).toBe(true);
+
+    const reverted = (await a.documents.revert(action?.id ?? panicked())).unwrap();
+    expect(reverted.skipped).toEqual([]);
+    expect(await until(() => body(da.value) === "> Hello!")).toBe(true);
+    expect(da.value.getMap("meta").get("tone")).toBeUndefined();
+    await link.flush();
+    expect(await until(() => body(db.value) === "> Hello!")).toBe(true);
+
+    // the revert is a write of its own: reverting it gives the edit back
+    (await a.documents.revert(reverted.event?.id ?? panicked())).unwrap();
+    expect(await until(() => body(da.value) === "> Hello world!")).toBe(true);
+    expect(da.value.getMap("meta").get("tone")).toBe("warm");
+    (await da.close()).unwrap();
+    (await db.close()).unwrap();
+    link.close();
+  });
+});
+
 describe("loro@1 history: materialise, compact, then a late joiner", () => {
   test("past the history bound the tail is materialised, compaction takes its events, and a joiner installs the checkpoint", async () => {
     const a = node(13, { limits: { snapshotEvery: 3 } });
@@ -708,3 +748,7 @@ describe("loro@1 materialisations never cover what their snapshot lacks", () => 
     expect((await a.documents.open<LoroDoc>(DOC)).unwrap().status()).toBe("behind");
   });
 });
+
+const panicked = (): never => {
+  throw new Error("expected a value");
+};
