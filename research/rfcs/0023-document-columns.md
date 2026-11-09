@@ -532,7 +532,9 @@ adopts the coverage only when every page was complete and every checkpoint's flo
 (D46's doc-column rule, lifted). The joiner checks `complete` rather than take it: every row of
 the pages whose cell names a lineage must have come with a checkpoint (PR #49 fix round 1). A
 document still on its first lineage, never replaced, leaves no mark in its row, so for it the
-joiner still takes the sender's word.
+joiner still takes the sender's word. A checkpoint whose producer may not edit its row
+(`engine.mayEditDoc`, as for a provisional install) is not installed and earns no floor, and a
+page sheds checkpoints from its end until its encoded bytes fit a frame beside its rows.
 Departs: the snapshot does not ride the bulk profile as a blob; `DocRef.status` is not `behind`
 during a join, since the bytes arrive with the rows; there is no page-version negotiation, so a
 build from before version 2 cannot read a documented page, counts it missing and asks again
@@ -782,7 +784,9 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
     map key or other last-writer cell someone set after the action may lose to the compensation
     by Lamport order, since the compensation is concurrent with it rather than older; the Rust
     adapter implements `compensate`, but the Rust device has no document runtime to revert with
-    (P7); `history()` with doc revisions and `openAt` are not built.
+    (P7); `history()` with doc revisions and `openAt` are not built. The rows are compensated
+    against the state as the revert's event is written, after the document compensator's wait,
+    so an edit that folds meanwhile is seen (PR #49 fix round 1).
 - **Redo** is `undo(undoAction)`. The undo stack is local and per principal. The history is
   shared.
 - **`history(table, key)`** extends today's `rowHistory` (`client/src/history.ts`). Doc updates
