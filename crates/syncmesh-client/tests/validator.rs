@@ -116,6 +116,7 @@ fn content(key: &str, genesis: bool) -> Change {
         genesis,
         legacy: false,
         parent: None,
+        settles: None,
     })
 }
 
@@ -430,6 +431,7 @@ fn a_document_never_rides_a_local_only_write() {
         genesis: false,
         legacy: false,
         parent: None,
+        settles: None,
     });
     let acme = Some(PartitionKey::parse("org:acme").unwrap());
     let refused = e.mutate_local("notes.edit", vec![doc.clone()], acme);

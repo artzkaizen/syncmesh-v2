@@ -8,6 +8,7 @@ import type {
   Row,
 } from "@syncmesh/kernel";
 
+import { compareStamp } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { type Table } from "@syncmesh/schema";
 import { deriveLineage } from "@syncmesh/wire";
@@ -46,8 +47,9 @@ const refuse = (change: DocChange, rung: DocRung, message: string) =>
  * this peer has not seen yet is how out-of-order delivery looks, and the lineage walk resolves it
  * when the parent lands, so parking it would park at one peer what another folds. Only what the
  * event alone disproves is refused: a parent on an edit that is not a genesis, a genesis that
- * names its own lineage as the one it replaces, and a genesis written under the rule before §16.1
- * (`legacy`), which the wire keeps readable so this is where it stops.
+ * names its own lineage as the one it replaces, an anchor that names it or is stamped no earlier
+ * than its event (gaps U21), and a genesis written under the rule before §16.1 (`legacy`), which
+ * the wire keeps readable so this is where it stops. The anchor's lineage need not be held either.
  */
 export function checkDoc(
   table: Table,
@@ -77,8 +79,8 @@ export function checkDoc(
       "lineage",
       "a genesis written under the lineage rule before RFC-0023 §16.1 (key 5 `true`)",
     );
-  if (change.parent !== undefined && change.parent === change.lineage)
-    return refuse(change, "lineage", "a genesis cannot replace its own lineage");
+  const named = namedRefusal(change, event);
+  if (named !== undefined) return refuse(change, "lineage", named);
   const twice = event.changes.some(
     (other, at) =>
       at !== index &&
@@ -95,6 +97,26 @@ export function checkDoc(
   return expected === change.lineage
     ? Result.ok(undefined)
     : refuse(change, "lineage", "the genesis names a lineage its place in the log does not derive");
+}
+
+/**
+ * What the event alone disproves about the lineages a genesis names: a parent that is its own
+ * lineage, and an anchor (gaps U21) naming that lineage or stamped at or after the genesis itself
+ * — which would pass the genesis and drop it from the cell it writes. `undefined` when there is
+ * nothing to say; a probe carries no stamp yet, and the engine names the anchor itself as it
+ * stamps the event.
+ */
+function namedRefusal(change: DocChange, event: ProbeEvent): string | undefined {
+  if (change.parent !== undefined && change.parent === change.lineage)
+    return "a genesis cannot replace its own lineage";
+  const { settles } = change;
+  if (settles === undefined) return undefined;
+  if (settles.lineage === change.lineage)
+    return "a genesis cannot settle the walk at its own lineage";
+  if (event.hlc === undefined) return undefined;
+  return compareStamp(settles.stamp, { hlc: event.hlc, peer: event.peerId }) < 0
+    ? undefined
+    : "a genesis settles the walk only at a lineage replaced before it";
 }
 
 const rowId = (change: Change): string => `${change.table}\u0000${change.key}`;

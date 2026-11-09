@@ -408,6 +408,7 @@ fn a_log_holding_a_legacy_genesis_still_reads() {
         genesis: true,
         legacy: true,
         parent: None,
+        settles: None,
     }));
     let old = StoredEvent::from_verified(syncmesh_core::sign_event(event, &identity(1)));
     let mut log = SqliteEventStore::open_in_memory().unwrap();

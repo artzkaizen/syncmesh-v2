@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use syncmesh_core::apply::{apply_change, merge_record};
 use syncmesh_core::doc::{
     DocColumns, Id16, LineageCellRefused, derive_lineage, lineage_of, parse_lineage_cells,
-    with_doc_columns,
+    settle_walk, with_doc_columns,
 };
 use syncmesh_core::envelope::sign_event;
 use syncmesh_core::event::{
@@ -203,6 +203,9 @@ pub struct Ack {
 
 pub type NowMs = Box<dyn Fn() -> i64 + Send>;
 
+/// [`EngineOptions::lineage_settle_after_ms`]'s default: 30 days, the TypeScript's.
+pub const DEFAULT_LINEAGE_SETTLE_AFTER_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
 pub struct EngineOptions {
     /// Per table and column, how concurrent writes merge; anything unnamed is `lww`.
     pub merge: Option<MergeSpec>,
@@ -229,6 +232,12 @@ pub struct EngineOptions {
     pub doc_store: Option<Box<dyn DocStore + Send>>,
     /// How many of this engine's own writes stay revertable. Default 0.
     pub undo_depth: usize,
+    /// How long after a `replace()` its lineage counts as settled (gaps U21), as the TypeScript's
+    /// `lineageSettleAfter`: a genesis this engine writes names, as its anchor, the deepest lineage
+    /// on the walk replaced at least this long before it, and every genesis stamped at or below
+    /// that one leaves the lineage cell on every peer. Default
+    /// [`DEFAULT_LINEAGE_SETTLE_AFTER_MS`], 30 days.
+    pub lineage_settle_after_ms: i64,
     /// The app schema this build declares (D31): stamped on every event it writes, under key 9.
     /// A reading for the fleet, never a gate; `None` stamps nothing.
     pub schema_version: Option<SchemaVersion>,
@@ -248,6 +257,7 @@ impl Default for EngineOptions {
             derived: DerivedColumns::new(),
             doc_adapters: BTreeSet::new(),
             doc_store: None,
+            lineage_settle_after_ms: DEFAULT_LINEAGE_SETTLE_AFTER_MS,
             undo_depth: 0,
             schema_version: None,
             validator: None,
@@ -292,6 +302,7 @@ pub struct Engine {
     /// room said it holds (G7). Numbering never goes at or below it, whatever the log holds.
     own_floor: u64,
     undo_depth: usize,
+    lineage_settle_after_ms: i64,
     /// The last `undo_depth` own writes and the rows they touched as they read before.
     undo: VecDeque<Undo>,
     /// The persisted lineage cell that made `open` rebuild the state from the log.
@@ -425,6 +436,7 @@ impl Engine {
                 .unwrap_or_else(|| Box::new(MemoryDocStore::new())),
             own_floor: 0,
             undo_depth: options.undo_depth,
+            lineage_settle_after_ms: options.lineage_settle_after_ms,
             undo: VecDeque::new(),
             refused_at_open: refused,
             schema_version: options.schema_version,
@@ -593,8 +605,16 @@ impl Engine {
             .enumerate()
             .map(|(index, change)| match change {
                 Change::Doc(mut d) if d.genesis => {
+                    let record = self.state.record(&d.table, &d.key);
                     d.lineage = Some(derive_lineage(&peer_id, seq_num, index as u32));
-                    d.parent = lineage_of(self.state.record(&d.table, &d.key), &d.column);
+                    d.parent = lineage_of(record, &d.column);
+                    // the anchor this write settles the walk at (gaps U21)
+                    d.settles = settle_walk(
+                        record
+                            .and_then(|r| r.cells.get(&d.column))
+                            .map(|c| &c.value),
+                        hlc.ms.saturating_sub(self.lineage_settle_after_ms),
+                    );
                     Change::Doc(d)
                 }
                 other => other,

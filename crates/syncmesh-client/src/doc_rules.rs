@@ -5,8 +5,9 @@
 //! A genesis's parent (§16.1) need not be held: one that has not arrived is how out-of-order
 //! delivery looks, and the lineage walk resolves it when it lands. Only what the event disproves
 //! is refused — a parent on an edit, a genesis that names its own lineage as the one it replaces,
-//! and a genesis written under the rule before §16.1 (`legacy`), which the wire keeps readable so
-//! this is where it stops.
+//! an anchor that names it or is stamped no earlier than its event (gaps U21), and a genesis
+//! written under the rule before §16.1 (`legacy`), which the wire keeps readable so this is where
+//! it stops.
 //!
 //! The `column` rung — a doc change on a column the table declares as something else — needs the
 //! table's columns, which only a validator's manifest has ([`crate::validate`]); with none, a doc
@@ -17,6 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syncmesh_core::doc::{DocChange, DocColumns, derive_lineage};
 use syncmesh_core::event::{Change, PeerId, SeqNum, SyncEvent};
+use syncmesh_core::hlc::Hlc;
+use syncmesh_core::stamp::Stamp;
 
 use crate::validate::{ValidationError, unfoldable};
 
@@ -79,6 +82,9 @@ pub struct DocEvent<'a> {
     /// `None` on a probe — this device's own write before it is numbered, whose lineage the
     /// engine derives itself.
     pub seq: Option<SeqNum>,
+    /// `None` on a probe, which is not stamped yet: the engine names a genesis's anchor itself as
+    /// it stamps the event (gaps U21).
+    pub hlc: Option<Hlc>,
     pub changes: &'a [Change],
     /// A local-only write (`Engine::mutate_local`), which no document change may ride.
     pub local: bool,
@@ -127,6 +133,23 @@ pub fn check_doc(
     if change.parent.is_some() && change.parent == change.lineage {
         return refuse(DocRung::Lineage, "a genesis cannot replace its own lineage");
     }
+    if let Some(settles) = &change.settles {
+        if Some(settles.lineage) == change.lineage {
+            return refuse(
+                DocRung::Lineage,
+                "a genesis cannot settle the walk at its own lineage",
+            );
+        }
+        // stamped at or after the genesis, the anchor would pass it and drop it from its cell
+        if let Some(hlc) = event.hlc
+            && settles.stamp >= Stamp::new(hlc, event.peer.clone())
+        {
+            return refuse(
+                DocRung::Lineage,
+                "a genesis settles the walk only at a lineage replaced before it",
+            );
+        }
+    }
     let twice = event.changes.iter().enumerate().any(|(at, other)| {
         at != index
             && matches!(other, Change::Doc(o) if o.genesis
@@ -158,6 +181,7 @@ pub fn doc_verdict(event: &SyncEvent, docs: &DocColumns, local: bool) -> Option<
     let at = DocEvent {
         peer: &event.peer_id,
         seq: Some(event.seq_num),
+        hlc: Some(event.hlc),
         changes: &event.changes,
         local,
     };

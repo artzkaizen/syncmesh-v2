@@ -8,7 +8,9 @@ use std::path::PathBuf;
 
 use proptest::prelude::*;
 use syncmesh_core::cbor::{Key, Value};
-use syncmesh_core::doc::{DocChange, DocUpdate, GENESIS_RULE, Id16, lineage_text};
+use syncmesh_core::doc::{
+    DocChange, DocUpdate, GENESIS_RULE, Id16, Settled, lineage_text, read_lineage_cell,
+};
 use syncmesh_core::envelope::envelope;
 use syncmesh_core::record::CellValue;
 use syncmesh_core::record::{JsonValue, RowRecord};
@@ -35,6 +37,7 @@ fn replace_of(lineage: Option<Id16>, genesis: bool, parent: Option<Id16>) -> Cha
         genesis,
         legacy: false,
         parent,
+        settles: None,
     })
 }
 
@@ -202,6 +205,91 @@ proptest! {
         }
         prop_assert_eq!(lineage(&joined), lineage(&forward));
         prop_assert_eq!(lineage(&forward), reference(&geneses));
+    }
+
+    /// An anchor written over an honest history — every genesis stamped by the cutoff held when it
+    /// is computed, each genesis replacing only what came before it — keeps the walk's result in
+    /// every order, whatever lands after it, and leaves nothing it passed in the cell (gaps U21),
+    /// as the TypeScript's "an anchor written over every honest history" property.
+    #[test]
+    fn an_anchor_over_an_honest_history_keeps_the_walk_in_every_order(
+        settled in proptest::collection::btree_set((0i64..7, 0u8..3), 1..6),
+        later in proptest::collection::btree_set((8i64..15, 0u8..3), 0..4),
+        parents in proptest::collection::vec(any::<u32>(), 9),
+        order in proptest::collection::vec(any::<u32>(), 10),
+        cutoff in 0i64..7,
+    ) {
+        // sorted by stamp, so a genesis only ever replaces one written before it
+        let stamps: Vec<(i64, u8)> = settled.iter().chain(later.iter()).copied().collect();
+        let tree: Vec<(Change, Stamp)> = stamps
+            .iter()
+            .enumerate()
+            .map(|(i, (ms, p))| {
+                let at = (parents[i] as usize) % (i + 1);
+                genesis(i as u8, *ms, *p, (at != i).then_some(at as u8))
+            })
+            .collect();
+        let ms = |s: &Stamp| s.hlc.ms;
+        let held: Vec<_> = tree.iter().filter(|(_, s)| ms(s) <= cutoff).cloned().collect();
+        let held_state = fold(&held);
+        let cell = held_state
+            .record("notes", "n1")
+            .and_then(|r| r.cells.get("content"))
+            .map(|c| &c.value);
+        // the deepest lineage on the walk replaced by the cutoff, as `settleWalk` names it
+        let read = read_lineage_cell(cell);
+        let mut anchor: Option<Settled> = None;
+        let mut at = None;
+        loop {
+            let next = read
+                .geneses
+                .iter()
+                .filter(|g| g.parent == at)
+                .min_by(|a, b| a.stamp.cmp(&b.stamp).then(a.lineage.cmp(&b.lineage)));
+            match next {
+                Some(g) if ms(&g.stamp) <= cutoff => {
+                    anchor = Some(Settled { lineage: g.lineage, stamp: g.stamp.clone() });
+                    at = Some(g.lineage);
+                }
+                _ => break,
+            }
+        }
+        let settling = (
+            Change::Doc(DocChange {
+                settles: anchor,
+                ..match replace_of(Some([0xf; 16]), true, lineage(&held_state)) {
+                    Change::Doc(d) => d,
+                    _ => unreachable!(),
+                }
+            }),
+            Stamp::new(Hlc::new(7, 0), peer(0)),
+        );
+        let all: Vec<_> = tree.iter().cloned().chain([settling]).collect();
+        let mut shuffled: Vec<_> = order.iter().copied().zip(all.clone()).collect();
+        shuffled.sort_by_key(|(o, _)| *o);
+        let shuffled: Vec<_> = shuffled.into_iter().map(|(_, g)| g).collect();
+        let forward = fold(&all);
+        prop_assert_eq!(&fold(&shuffled), &forward);
+        prop_assert_eq!(&fold(&[shuffled.clone(), all.clone()].concat()), &forward);
+        let untrimmed: Vec<_> = all
+            .iter()
+            .map(|(c, s)| match c {
+                Change::Doc(d) => (Change::Doc(DocChange { settles: None, ..d.clone() }), s.clone()),
+                other => (other.clone(), s.clone()),
+            })
+            .collect();
+        prop_assert_eq!(lineage(&forward), lineage(&fold(&untrimmed)));
+        let kept = read_lineage_cell(
+            forward
+                .record("notes", "n1")
+                .and_then(|r| r.cells.get("content"))
+                .map(|c| &c.value),
+        );
+        if let Some(anchor) = &kept.settled {
+            for g in &kept.geneses {
+                prop_assert!(g.stamp > anchor.stamp && g.lineage != anchor.lineage);
+            }
+        }
     }
 
     /// Flips and truncations of the frozen insert+genesis frame: refused unless byte-identical.

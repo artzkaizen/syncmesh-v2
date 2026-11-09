@@ -11,6 +11,7 @@ import type {
 
 import { getRecord, docLineage, withDocColumns } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 import { bytesEqual } from "@syncmesh/wire";
 
 import type { DocEditorApi } from "./doc-editor.js";
@@ -49,7 +50,18 @@ export interface DocEngineOptions {
   readonly docAdapters?: ReadonlySet<AdapterId>;
   /** Where the doc log and heads live; absent, an in-memory one. */
   readonly docStore?: DocStore;
+  /**
+   * How long after a `replace()` its lineage counts as settled (gaps U21): a genesis this engine
+   * writes names, as its anchor, the deepest lineage on the walk replaced at least this long
+   * before it, and every genesis stamped at or below that one leaves the lineage cell on every
+   * peer. A device that held an older `replace()` unsent for longer finds it off the walk, as
+   * RFC-0015 §2a treats a peer forgotten after `forgetPeersAfter`. Default 30 days.
+   */
+  readonly lineageSettleAfter?: Temporal.Duration;
 }
+
+/** {@link DocEngineOptions.lineageSettleAfter}'s default. */
+export const DEFAULT_LINEAGE_SETTLE_AFTER = Temporal.Duration.from({ days: 30 });
 
 /** A tail entry with what it carries: its bytes inline, or the blob that holds them. */
 export type TailUpdate =

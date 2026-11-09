@@ -1,4 +1,5 @@
 import {
+  hlcOf,
   parseAdapterId,
   parseLineageId,
   parsePartitionKey,
@@ -181,6 +182,31 @@ describe("a doc change against the schema (RFC-0023 §10)", () => {
       tag: "DocChangeRefused",
       rung: "lineage",
     });
+  });
+
+  test("an anchor naming its own genesis, or stamped no earlier than it, is refused (gaps U21)", () => {
+    const at = { seqNum: seq(4), hlc: hlcOf(NOW.epochMilliseconds, 0) };
+    const derived = deriveLineage(editor.peerId, seq(4), 0);
+    const parent = parseLineageId("0a".repeat(16)).unwrap();
+    const anchor = (ms: number, lineage = parent) => ({
+      lineage,
+      stamp: { hlc: hlcOf(ms, 0), peer: editor.peerId },
+    });
+    const settling = (settles: DocChange["settles"]) =>
+      doc({ genesis: true, lineage: derived, parent, ...(settles !== undefined && { settles }) });
+    // an anchor whose own genesis this peer never held is fine: it carries its stamp
+    expect(verdict([settling(anchor(NOW.epochMilliseconds - 1))], at)).toBe("ok");
+    for (const refused of [
+      anchor(NOW.epochMilliseconds),
+      anchor(NOW.epochMilliseconds + 1),
+      anchor(NOW.epochMilliseconds - 1, derived),
+    ])
+      expect(verdict([settling(refused)], at)).toEqual({
+        tag: "DocChangeRefused",
+        rung: "lineage",
+      });
+    // a probe has no stamp: the engine names the anchor as it stamps the event
+    expect(verdict([settling(anchor(NOW.epochMilliseconds + 1))])).toBe("ok");
   });
 
   test("a genesis written under the lineage rule before §16.1 is refused, numbered or not", () => {

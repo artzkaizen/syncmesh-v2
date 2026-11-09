@@ -1,7 +1,7 @@
 import type { Change, Hlc, HlcClock, PeerId, SchemaVersion, SeqNum, State } from "@syncmesh/kernel";
+import type { Procedure, SyncEvent } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
-import { getRecord, docLineage, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 
 import type { AtomicStores, Engine, FoldBatch, FoldSource, MutateOptions } from "./engine.js";
@@ -14,7 +14,7 @@ import type { TelemetryEvent } from "./telemetry.js";
 import type { Undo } from "./undo.js";
 import type { ProbeEvent, StateLookup, Validator } from "./validate.js";
 
-import { buildEvent, nextSeq } from "./build-event.js";
+import { buildEvent, nextSeq, replacesAt } from "./build-event.js";
 import { EmptyMutation } from "./errors.js";
 import { withDerivedKeys } from "./fold.js";
 import { adoptOwnPosition, createOwnFloor, pastFloor } from "./own-position.js";
@@ -125,6 +125,8 @@ export interface WriteDeps {
   readonly validate?: Validator | undefined;
   readonly before: StateLookup;
   readonly undoDepth: number;
+  /** How long after a replace its lineage counts as settled (`DocEngineOptions.lineageSettleAfter`). */
+  readonly settleAfter: Temporal.Duration;
   readonly undo: Undo[];
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
   /** Whether `atomically` is one transaction over the engine's stores (`EngineOptions.atomic`). */
@@ -167,7 +169,6 @@ export function createWritePath(deps: WriteDeps) {
     derive,
     outbound,
     telemetry,
-    admitEntries,
   } = deps;
   const durably = reportCommits(deps.atomically, telemetry);
   // own sequences known to exist outside this log (G7): numbering never goes at or below it
@@ -207,7 +208,7 @@ export function createWritePath(deps: WriteDeps) {
       nextSeq(pastFloor(last, floor)),
       changes,
       mutateOptions,
-      (doc) => docLineage(getRecord(getState(), doc.table, doc.key), doc.column),
+      replacesAt(getState, deps.settleAfter, hlc),
     );
     (await scoped.events.append({ event })).unwrap();
     /**
@@ -304,7 +305,7 @@ export function createWritePath(deps: WriteDeps) {
 
   const receiveBatch: Engine["receiveBatch"] = (entries) =>
     Result.gen(async function* () {
-      const { fresh, quarantined } = yield* Result.await(admitEntries(entries));
+      const { fresh, quarantined } = yield* Result.await(deps.admitEntries(entries));
       for (const { event } of fresh) {
         clock.receive(event.hlc);
         // an own event taken back (see `admit`): a write this device made, so never numbered over
