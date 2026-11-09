@@ -226,6 +226,7 @@
         "@syncmesh/relay": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/storage": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
         "@syncmesh/client": "workspace:*",
@@ -234,7 +235,6 @@
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/sqlite-bun": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
-        "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "catalog:",
         "typescript": "catalog:",

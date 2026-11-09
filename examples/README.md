@@ -9,9 +9,10 @@ yours to deploy; this directory is what running them actually looks like.
 | **B · a fleet** — several relays, Redis between them              | [`src/fleet`](src/fleet)       | `docker compose … up --build`, then `server` and `device` with `RELAY_URL` |
 | **C · one actor per room** — a Durable Object                     | `adapters/cloudflare-do`       | its own test suite; there is nothing to deploy from here                   |
 
-Shape C is a library, not a deployment: `relayDurableHost(ctx, { posture: { trust } })` plus the
-four lines of `fetch` in the `@example` on it. It is a hosted preset, so it refuses to start
-without `posture.trust` or an explicit `posture.open: true` (D40). `adapters/cloudflare-do/src/__tests__/host.test.ts` already runs the same
+Shape C is a library, not a deployment: `relayDurableHost(ctx, { posture: { trust }, vault })` plus
+the four lines of `fetch` in the `@example` on it. It is a hosted preset, so it refuses to start
+without `posture.trust` or an explicit `posture.open: true` (D40), and without a `vault` to seal its
+room key and link keys at rest (`createKeyVault` over a Worker secret, N26). `adapters/cloudflare-do/src/__tests__/host.test.ts` already runs the same
 client against an embedded relay and a Durable Object and compares state digests, which is E25's
 done-when for A against C. [`src/__tests__/fleet.test.ts`](src/__tests__/fleet.test.ts) is the same
 question for A against B: two phones behind two instances, digests compared across the two hosts.

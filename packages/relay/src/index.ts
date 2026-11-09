@@ -94,10 +94,10 @@ export {
   createGate,
   createRelayHost,
   durableRoomStore,
-  relayEpoch,
-  relayIdentity,
   postureGate,
 } from "./host.js";
+export type { RelaySecretOptions } from "./relay-meta.js";
+export { relayEpoch, relayIdentity, relaySecret } from "./relay-meta.js";
 export { describeRoom } from "./describe.js";
 export type { BlobSweep } from "./blob-keeper.js";
 export type { DurableBlobs } from "./durable-blobs.js";

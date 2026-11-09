@@ -1,6 +1,8 @@
 import type { RelayDial } from "@syncmesh/relay";
 import type { Database } from "bun:sqlite";
 
+import { createPlaintextVault } from "@syncmesh/wire";
+
 import type { DurableRelayContext, RelayDurableHostOptions } from "../host.js";
 import type { DurableWebSocket } from "../socket.js";
 
@@ -79,8 +81,13 @@ function dialOne(to: Delivery): RelayDial {
  * accepted sockets that outlives it too, and an instance that does not.
  */
 export function durableRelay(db: Database, given: RelayDurableHostOptions = {}) {
-  // a hosted preset states who reads it (D40); these tests are about the object, so it is open
-  const options = { ...given, posture: { open: true, ...given.posture } };
+  // a hosted preset states who reads it (D40) and what seals its secrets (N26); these tests are
+  // about the object, so it is open and its secrets plaintext unless a test says otherwise
+  const options = {
+    vault: createPlaintextVault(),
+    ...given,
+    posture: { open: true, ...given.posture },
+  };
   const accepted: DurableWebSocket[] = [];
   const ctx: DurableRelayContext = {
     storage: { sql: durableSqlOver(db) },

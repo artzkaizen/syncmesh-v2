@@ -8,6 +8,7 @@ import type {
   RelayPosture,
   RoomStore,
 } from "@syncmesh/relay";
+import type { SeedVault } from "@syncmesh/wire";
 
 import {
   DEFAULT_LIMITS,
@@ -19,6 +20,7 @@ import {
   openDurableBlobs,
   relayIdentity,
   relayEpoch,
+  relaySecret,
 } from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
 import { sqliteEventStore } from "@syncmesh/storage";
@@ -28,7 +30,7 @@ import type { DurableSqlStorage } from "./driver.js";
 import type { DurableWebSocket } from "./socket.js";
 
 import { doSqliteDriver } from "./driver.js";
-import { decodeResume, trackResume } from "./resume.js";
+import { decodeResume, linkSealer, trackResume, type LinkSealer } from "./resume.js";
 import { durableRelaySocket } from "./socket.js";
 
 /**
@@ -77,6 +79,17 @@ export interface RelayDurableHostOptions {
    * `announce` defaults to off — an object on the internet states who reads it.
    */
   readonly posture?: RelayPosture;
+  /**
+   * What seals the secrets the object keeps at rest (N26): the room's signing seed in its SQLite,
+   * and the key its sockets' link secrets are sealed under in their attachments. Required, as
+   * `posture` is: `createKeyVault` over a Worker secret (`hexToBytes(env.RELAY_SEAL_KEY)`), or
+   * `createPlaintextVault()` for tests and development, which every open says. A secret sealed by
+   * one vault is refused by another, and one a changed key no longer opens is refused, never
+   * replaced.
+   */
+  readonly vault?: SeedVault;
+  /** Where the plaintext vault's notice and a migration's report go. Default `console.warn`. */
+  readonly onNotice?: (message: string) => void;
 }
 
 /** The three callbacks of a hibernating WebSocket object, already wired to a room, and the gate before them. */
@@ -118,14 +131,19 @@ export interface RelayDurableHost {
  * The room signs no custody (D28, U38), and there is no option for it: its key is kept in the
  * object's own SQLite beside the log, so a lost log takes the key with it and what the old key
  * signed would never be withdrawn. Its acks still answer `synced()`; detach waits for a device's
- * receipt.
+ * receipt. That key, and the key the sockets' link secrets are sealed under in their attachments,
+ * are sealed at rest by `vault` (N26).
  *
  * The room closes when its last socket leaves, keepalive and all, so the platform can hibernate
  * the object; the next socket opens it again from the same SQLite.
  *
  * @example
  * export class Relay extends DurableObject<Env> {
- *   #relay = relayDurableHost(this.ctx, { posture: { trust: { issuers: [ISSUER] } } });
+ *   #relay = relayDurableHost(this.ctx, {
+ *     posture: { trust: { issuers: [ISSUER] } },
+ *     // the room's key and its sockets' link keys are sealed under a Worker secret (N26)
+ *     vault: createKeyVault(hexToBytes(this.env.RELAY_SEAL_KEY).unwrap()),
+ *   });
  *   override async fetch(request: Request) {
  *     if (request.headers.get("upgrade") !== "websocket") return this.#relay.describe(request);
  *     const refused = await this.#relay.gate(request);
@@ -146,8 +164,19 @@ export function relayDurableHost(
   ctx: DurableRelayContext,
   options: RelayDurableHostOptions = {},
 ): RelayDurableHost {
+  const { vault } = options;
+  if (vault === undefined)
+    panic(
+      "a Durable Object relay keeps its room key and its sockets' link keys at rest: pass `vault` — createKeyVault over a Worker secret, or createPlaintextVault() for tests and development (N26)",
+    );
+  const secrets = omitUndefined({ vault, onNotice: options.onNotice });
   const live = new Map<DurableWebSocket, RelayConnection>();
-  const resume = trackResume();
+  // the attachment key is read before any socket is bound, so every write after it can seal
+  let sealing: Promise<LinkSealer> | undefined;
+  let sealer: LinkSealer | undefined;
+  const sealerNow = (): LinkSealer =>
+    sealer ?? panic("a socket's link secrets were written before the attachment key was read");
+  const resume = trackResume(sealerNow);
   const name = options.name ?? "main";
 
   /**
@@ -169,7 +198,7 @@ export function relayDurableHost(
       epoch: await relayEpoch(driver),
       // the platform's own database, which outlives every eviction (D42)
       durable: true,
-      identity: await relayIdentity(driver),
+      identity: await relayIdentity(driver, secrets),
       ...blobs,
       // the object's storage is the platform's to close; nothing was borrowed
       release: () => undefined,
@@ -211,10 +240,15 @@ export function relayDurableHost(
     waking: DurableWebSocket | undefined,
   ): Promise<readonly Uint8Array[] | undefined> => {
     const { room } = await (opening ??= host.acquire(name));
+    sealer = await (sealing ??= relaySecret(
+      doSqliteDriver(ctx.storage.sql),
+      "attachment-key",
+      secrets,
+    ).then(linkSealer));
     let deferred: readonly Uint8Array[] | undefined;
     for (const ws of ctx.getWebSockets()) {
       if (live.has(ws)) continue;
-      const kept = decodeResume(ws.deserializeAttachment());
+      const kept = decodeResume(ws.deserializeAttachment(), sealer);
       // the link picks up where the attachment says it stopped (D36): a challenge is handed back
       // so the join about to arrive still verifies (D33); an offer finishes the handshake with the
       // secret that was made; a session opens the next sealed frame. One never told anything is

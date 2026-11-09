@@ -1,16 +1,21 @@
-import { bytesToHex, hexToBytes, openPayload, randomBytes, sealPayload } from "@syncmesh/wire";
+import { Result } from "@syncmesh/result";
+
+import { randomBytes } from "./entropy.js";
+import { bytesEqual, bytesToHex, hexToBytes } from "./hex.js";
+import { openPayload, sealPayload } from "./sealing.js";
 
 /**
- * Where this install's device seed is kept safe at rest (gaps U4): the platform keystore that
- * holds a key the seed is sealed under.
+ * Where a secret kept beside its data is kept safe at rest: the platform keystore that holds a key
+ * the secret is sealed under. A device's seed (gaps U4), a relay room's seed and a Durable
+ * Object's link keys (N26) all go through one.
  *
- * The sealed seed stays in the device's own database, so it is still gone when the database is
- * (the reason `deviceIdentity` keeps it there). What the keystore adds is that the file alone is
+ * The sealed secret stays in its own database, so it is still gone when the database is (the
+ * reason `deviceIdentity` keeps the seed there). What the keystore adds is that the file alone is
  * not the key: a copy of the database — a backup, a lost laptop's disk, a file another app read —
- * opens nothing without the keystore of the device that sealed it.
+ * opens nothing without the keystore of the machine that sealed it.
  *
  * `seal` and `open` throw on failure; `deviceIdentity` turns a throw into `DeviceKeyUnavailable`.
- * `kind` is stored beside the sealed bytes, and a seed sealed by one kind is refused by another.
+ * `kind` is stored beside the sealed bytes, and a secret sealed by one kind is refused by another.
  */
 export interface SeedVault {
   /** Stored with the sealed seed. Letters, digits and `-` only. */
@@ -297,3 +302,73 @@ export const platformVault = (): SeedVault | undefined =>
   "indexedDB" in globalThis && globalThis.crypto?.subtle !== undefined
     ? createWebCryptoVault()
     : undefined;
+
+/**
+ * A vault over one 32-byte key the platform hands the process rather than keeps in a keystore:
+ * a Worker secret, a key a KMS unwrapped at start (N26). Sealed with XChaCha20-Poly1305, so the
+ * database alone opens nothing; the key is the deployment's, and rotating it leaves every secret
+ * it sealed unreadable, which an open then refuses rather than minting new ones.
+ *
+ * @example
+ * const vault = createKeyVault(hexToBytes(env.RELAY_SEAL_KEY).unwrap());
+ */
+export function createKeyVault(
+  key: Uint8Array,
+  options: { readonly kind?: string } = {},
+): SeedVault {
+  if (key.length !== WRAPPING_KEY_BYTES)
+    throw new Error(`a key vault takes a ${WRAPPING_KEY_BYTES}-byte key, not ${key.length} bytes`);
+  return {
+    kind: options.kind ?? "key",
+    seal: (secret) => Promise.resolve(sealPayload(key, secret, SEED_AAD)),
+    open: (sealed) => Promise.resolve(openPayload(key, sealed, SEED_AAD).unwrap()),
+  };
+}
+
+/** What a sealed text names its vault by: letters, digits and `-`, so `sealed:<kind>:` splits back. */
+export const VAULT_KIND = /^[A-Za-z0-9-]+$/;
+
+/** The prefix of a sealed text; bare hex is plaintext. */
+const SEALED = "sealed:";
+
+/**
+ * Sealed bytes as the text a database keeps: `sealed:<kind>:<hex>`, or bare hex for
+ * {@link createPlaintextVault}, which is what a row from before any vault held.
+ *
+ * @example
+ * sealedText(vault, await vault.seal(seed)); // "sealed:webcrypto:9f3c…"
+ */
+export const sealedText = (vault: SeedVault, sealed: Uint8Array): string =>
+  vault.kind === PLAINTEXT_VAULT
+    ? bytesToHex(sealed)
+    : `${SEALED}${vault.kind}:${bytesToHex(sealed)}`;
+
+/**
+ * A {@link sealedText} back as the vault kind that wrote it and its bytes.
+ *
+ * @example
+ * parseSealedText("sealed:key:00ff").unwrap(); // { kind: "key", bytes: Uint8Array [0, 255] }
+ */
+export function parseSealedText(text: string) {
+  if (!text.startsWith(SEALED))
+    return hexToBytes(text).map((bytes) => ({ kind: PLAINTEXT_VAULT, bytes }));
+  const rest = text.slice(SEALED.length);
+  const split = rest.indexOf(":");
+  const kind = rest.slice(0, Math.max(split, 0));
+  return hexToBytes(split < 0 ? "" : rest.slice(split + 1)).map((bytes) => ({ kind, bytes }));
+}
+
+/**
+ * Seals `secret`, then opens what it sealed: a vault that cannot read its own seal back fails
+ * here, at the first write, instead of at the next open.
+ */
+export const sealChecked = (vault: SeedVault, secret: Uint8Array) =>
+  Result.tryPromise({
+    try: async () => {
+      const sealed = await vault.seal(secret);
+      if (!bytesEqual(await vault.open(sealed), secret))
+        throw new Error(`the ${vault.kind} vault does not open what it sealed`);
+      return sealed;
+    },
+    catch: (cause) => cause,
+  });
