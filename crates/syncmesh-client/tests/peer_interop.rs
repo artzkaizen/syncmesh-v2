@@ -16,7 +16,9 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use syncmesh_client::driver::{PeerCommand, PeerMedium, StreamMedium, run_peer};
+use syncmesh_client::driver::{
+    PeerCommand, PeerMedium, PeerRead, PeerWrite, StreamMedium, run_peer,
+};
 use syncmesh_client::{
     Engine, EngineOptions, Framing, JoinOutcome, MemoryEventStore, PeerAction, PeerOptions,
     PresenceTier, decode_and_verify_presence,
@@ -27,6 +29,7 @@ use syncmesh_core::identity::Identity;
 use syncmesh_core::record::{CellValue, Row};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -118,12 +121,40 @@ fn folded_row(value: &serde_json::Value, key: &str) -> Option<String> {
 /// length-prefixed record — one write, one notification.
 struct Gatt {
     socket: TcpStream,
+}
+
+/// Gatt's notifications.
+struct GattReader {
+    socket: OwnedReadHalf,
     reader: FrameReader,
     ready: VecDeque<Vec<u8>>,
     buffer: Vec<u8>,
 }
 
+/// Gatt's writes.
+struct GattWriter {
+    socket: OwnedWriteHalf,
+}
+
 impl PeerMedium for Gatt {
+    type Reader = GattReader;
+    type Writer = GattWriter;
+
+    fn split(self) -> (GattReader, GattWriter) {
+        let (read, write) = self.socket.into_split();
+        (
+            GattReader {
+                socket: read,
+                reader: FrameReader::new(BLE_LIMIT),
+                ready: VecDeque::new(),
+                buffer: vec![0; 4096],
+            },
+            GattWriter { socket: write },
+        )
+    }
+}
+
+impl PeerRead for GattReader {
     async fn read(&mut self) -> Option<Vec<u8>> {
         loop {
             if let Some(packet) = self.ready.pop_front() {
@@ -141,7 +172,9 @@ impl PeerMedium for Gatt {
             self.ready.extend(packets);
         }
     }
+}
 
+impl PeerWrite for GattWriter {
     async fn write(&mut self, bytes: Vec<u8>) -> std::io::Result<()> {
         assert!(bytes.len() <= BLE_LIMIT, "a {}-byte BLE write", bytes.len());
         let framed = frame_with_length(&bytes, BLE_LIMIT).map_err(std::io::Error::other)?;
@@ -398,11 +431,6 @@ async fn a_rust_device_and_a_typescript_device_converge_over_ble_fragments() {
     };
     let ts = Typescript::start(&bun, "ble").await;
     let socket = TcpStream::connect(("127.0.0.1", ts.port)).await.unwrap();
-    let gatt = Gatt {
-        socket,
-        reader: FrameReader::new(BLE_LIMIT),
-        ready: VecDeque::new(),
-        buffer: vec![0; 4096],
-    };
+    let gatt = Gatt { socket };
     converge(ts, gatt, Framing::fragments(BLE_LIMIT), None).await;
 }

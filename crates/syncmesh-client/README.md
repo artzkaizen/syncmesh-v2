@@ -208,7 +208,10 @@ position, other rows), `Snapshot` (a join that settled), `Dropped`, `Ended`. `Pe
 session alone, over plaintext frames, for a medium that is already sealed and framed.
 
 Behind `tokio`, `driver::run_peer` runs one over any `PeerMedium` — `StreamMedium` for
-`AsyncRead + AsyncWrite`, `MessageMedium` for a `Stream + Sink` of messages, or your own — and
+`AsyncRead + AsyncWrite`, `MessageMedium` for a `Stream + Sink` of messages, or your own, which
+splits into a `PeerRead` and a `PeerWrite` half. The write half drains a queue while the link
+keeps reading, so two devices that each owe the other more than the medium buffers both get
+through, and a presence value still waiting replaces the one before it under its slot. And
 `Mesh::attach_peer` runs one beside the relay link, handing it every write, presence value and
 fold, and the relay and the other links what it folds. It returns a `PeerHandle`: its `id()` is
 what that link's `MeshEvent::Peer` facts carry (unique even when two links share a name), and

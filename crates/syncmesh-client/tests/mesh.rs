@@ -732,3 +732,43 @@ async fn a_host_commands_a_peer_link_the_mesh_runs_through_its_handle() {
     a.stop().await;
     b.stop().await;
 }
+
+#[tokio::test]
+async fn two_meshes_with_a_backlog_each_way_converge_over_a_narrow_pipe() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    let mut a = device(1, &url, &key);
+    let mut b = device(2, &url, &key);
+    // each side owes the other far more than the pipe holds, and both answer at once
+    for n in 0..60 {
+        a.mutate(
+            "notes.create",
+            vec![insert(&format!("a{n}"), "from a")],
+            None,
+        )
+        .unwrap();
+        b.mutate(
+            "notes.create",
+            vec![insert(&format!("b{n}"), "from b")],
+            None,
+        )
+        .unwrap();
+    }
+    let (x, y) = tokio::io::duplex(1024);
+    a.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    b.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    let has = |mesh: &Mesh, key: &str| mesh.engine().state().read_row("notes", key).is_some();
+    timeout(STEP, async {
+        while !(has(&a, "b59") && has(&b, "a59")) {
+            let _ = a.poll_events();
+            let _ = b.poll_events();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("both backlogs crossed");
+    assert_eq!(a.engine().state(), b.engine().state());
+    a.stop().await;
+    b.stop().await;
+}
