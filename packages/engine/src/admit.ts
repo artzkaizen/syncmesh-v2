@@ -1,11 +1,19 @@
-import type { PartitionKey, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
+import type {
+  EventId,
+  PartitionKey,
+  PeerId,
+  Row,
+  RowKey,
+  SyncEvent,
+  TableName,
+} from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
 
 import type { Quarantined } from "./engine.js";
 import type { EngineError, ValidationError } from "./errors.js";
 import type { QuarantineStore, UnknownHandling } from "./quarantine.js";
-import type { EventStore, StoredEvent } from "./store.js";
+import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
 import type { StateLookup, Validator } from "./validate.js";
 
 import { unfoldableKind } from "./columns.js";
@@ -144,13 +152,15 @@ export const admit = (entries: readonly StoredEvent[], deps: AdmitDeps) =>
     const overlay = createOverlay(deps.before);
     const floors =
       entries.length === 0 ? EMPTY_COVERAGE : yield* Result.await(deps.store.compactedBelow());
+    const held = yield* Result.await(holding(deps.store, entries));
     let quarantined = 0;
     for (const entry of entries) {
       const { event } = entry;
       const own = event.peerId === deps.peerId;
       if ((own && entry.sig === undefined) || seen.has(event.id)) continue;
       seen.add(event.id);
-      if (yield* Result.await(deps.store.has(event.id))) continue;
+      if (held === undefined ? yield* Result.await(deps.store.has(event.id)) : held.has(event.id))
+        continue;
       // below the floor the log cannot say it held the event, so it is asked whether compaction
       // took it: one that did already stands in the state, and is skipped like one it holds
       const floor = (event.local === true ? floors.local : floors.synced).get(event.peerId) ?? 0;
@@ -166,6 +176,18 @@ export const admit = (entries: readonly StoredEvent[], deps: AdmitDeps) =>
     }
     return Result.ok({ fresh, quarantined });
   });
+
+/**
+ * What the log already holds of a batch, asked once where the store can ({@link EventStore.holding});
+ * `undefined` where it cannot, and `has` is asked per event instead.
+ */
+const holding = async (
+  store: EventStore,
+  entries: readonly StoredEvent[],
+): Promise<Result<ReadonlySet<EventId> | undefined, StoreFailure>> =>
+  store.holding === undefined || entries.length === 0
+    ? Result.ok(undefined)
+    : store.holding(entries.map((entry) => entry.event.id));
 
 const refusal = (
   deps: AdmitDeps,

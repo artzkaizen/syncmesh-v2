@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
 
-import { withEntry } from "../persistent-map.js";
+import type { Packing } from "../persistent-map.js";
+
+import { createPackedMap, isPackedMap, withEntry } from "../persistent-map.js";
 
 /** The reference: what `withEntry` replaced — a full copy per write. */
 const copyWith = <K, V>(map: ReadonlyMap<K, V>, key: K, value: V): ReadonlyMap<K, V> =>
@@ -80,5 +82,75 @@ describe("withEntry", () => {
     for (let i = 1; i < 200_000; i += 1) latest = withEntry(latest, i, i);
     expect(oldest.size).toBe(1);
     expect(latest.size).toBe(200_000);
+  });
+});
+
+/** A value as it is held packed: its negation, in a box. */
+class Box {
+  constructor(readonly packed: number) {}
+}
+
+/** Two warm at most: every third write packs one. */
+const boxed = {
+  pack: (value: number) => new Box(-value),
+  unpack: (box: Box) => -box.packed,
+  isPacked: (slot): slot is Box => slot instanceof Box,
+  warm: 2,
+} satisfies Packing<number, Box>;
+
+describe("createPackedMap", () => {
+  test("every version reads, sizes and iterates as a copy-per-write Map would, however packed", () => {
+    fc.assert(
+      fc.property(fc.array(step, { maxLength: 60 }), (steps) => {
+        const real: ReadonlyMap<number, number>[] = [createPackedMap(new Map([[100, 0]]), boxed)];
+        const model: ReadonlyMap<number, number>[] = [new Map([[100, 0]])];
+        for (const s of steps) {
+          const at = s.from % real.length;
+          if (s.kind === "write") {
+            real.push(withEntry(real[at]!, s.key, s.value));
+            model.push(copyWith(model[at]!, s.key, s.value));
+          } else {
+            expect([...real[at]!]).toEqual([...model[at]!]);
+            for (const k of model[at]!.keys()) expect(real[at]!.get(k)).toBe(model[at]!.get(k));
+          }
+        }
+        real.forEach((version, i) => {
+          expect([...version.entries()]).toEqual([...model[i]!.entries()]);
+          expect(version.size).toBe(model[i]!.size);
+          for (const k of model[i]!.keys()) expect(version.get(k)).toBe(model[i]!.get(k));
+        });
+      }),
+    );
+  });
+
+  test("holds all but the warm values packed, and reads the packed ones back", () => {
+    let map: ReadonlyMap<number, number> = createPackedMap(new Map<number, number>(), boxed);
+    for (let i = 0; i < 10; i += 1) map = withEntry(map, i, i * 10);
+    expect(isPackedMap(map)).toBe(true);
+    expect([...map.values()]).toEqual([0, 10, 20, 30, 40, 50, 60, 70, 80, 90]);
+    expect(map.get(3)).toBe(30);
+  });
+
+  test("hands back one object per key while it stays warm", () => {
+    const pack = (value: { readonly n: number }) => ({ packed: value.n });
+    const objects = {
+      pack,
+      unpack: (box: { readonly packed: number }) => ({ n: box.packed }),
+      isPacked: (slot): slot is { readonly packed: number } => "packed" in slot,
+      warm: 2,
+    } satisfies Packing<{ readonly n: number }, { readonly packed: number }>;
+    const map = createPackedMap(new Map([[1, { packed: 1 }]]), objects);
+    const first = map.get(1);
+    expect(first).toEqual({ n: 1 });
+    expect(map.get(1)).toBe(first);
+  });
+
+  test("never lets a handle to the map it was made from read a packed slot", () => {
+    let plain: ReadonlyMap<number, number> = new Map();
+    for (let i = 0; i < 6; i += 1) plain = withEntry(plain, i, i);
+    let packed = createPackedMap(plain, boxed);
+    for (let i = 6; i < 12; i += 1) packed = withEntry(packed, i, i);
+    expect([...plain.values()]).toEqual([0, 1, 2, 3, 4, 5]);
+    expect([...packed.values()]).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 });

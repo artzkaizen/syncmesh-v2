@@ -47,6 +47,8 @@ export { compareValue, counterDelta, counterValue, strategies } from "./strategy
 export type { KeyedRecord, State, TableState } from "./state.js";
 export { emptyState, getRecord, keyedRecords, readRow } from "./state.js";
 export { applyChange, mergeRecord } from "./apply.js";
+export type { Packing } from "./persistent-map.js";
+export { createPackedMap, isPackedMap } from "./persistent-map.js";
 export type {
   EventId,
   ParsedEventId,

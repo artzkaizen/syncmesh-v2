@@ -1,6 +1,12 @@
 import type { Cell, ColumnName, PeerId, RowRecord, Stamp } from "@syncmesh/kernel";
 
-import { codePointOrder, hlcOf, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
+import {
+  codePointOrder,
+  compareStamp,
+  hlcOf,
+  parsePartitionKey,
+  parsePeerId,
+} from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 
 import type { CborValue } from "./cbor.js";
@@ -15,11 +21,17 @@ export class MalformedRecord extends TaggedError("MalformedRecord")<{ message: s
 
 const malformed = (message: string) => Result.err(new MalformedRecord({ message }));
 
-const stampToCbor = (stamp: Stamp): CborValue => [
-  stamp.hlc[0].epochMilliseconds,
-  stamp.hlc[1],
-  hexToBytes(stamp.peer).unwrap(),
-];
+/** A peer's id as bytes, converted once per device rather than once per cell; never mutated. */
+const peerBytes = new Map<PeerId, Uint8Array>();
+
+const stampToCbor = (stamp: Stamp): CborValue => {
+  let bytes = peerBytes.get(stamp.peer);
+  if (bytes === undefined) {
+    bytes = hexToBytes(stamp.peer).unwrap();
+    peerBytes.set(stamp.peer, bytes);
+  }
+  return [stamp.hlc[0].epochMilliseconds, stamp.hlc[1], bytes];
+};
 
 const optional = (stamp: Stamp | undefined): CborValue =>
   stamp === undefined ? null : stampToCbor(stamp);
@@ -56,7 +68,36 @@ export function encodeRecord(record: RowRecord): Uint8Array {
   ]);
 }
 
+/**
+ * A record as {@link encodeRecord} writes it, with one difference: a cell stamped like the record's
+ * `writeStamp` is written `[column, value]` and the stamp is left to the record. What a row costs
+ * held in memory rather than on the wire; read back with {@link unpackRecord}, never hashed.
+ */
+export function packRecord(record: RowRecord): Uint8Array {
+  const { writeStamp } = record;
+  const cells = canonicalCells(record).map(([column, cell]): CborValue =>
+    writeStamp !== undefined && compareStamp(cell.stamp, writeStamp) === 0
+      ? [column, cellToCbor(cell.value)]
+      : [column, cellToCbor(cell.value), stampToCbor(cell.stamp)],
+  );
+  return encodeCbor([
+    cells,
+    optional(writeStamp),
+    optional(record.deleteStamp),
+    record.partition ?? null,
+  ]);
+}
+
 export function decodeRecord(bytes: Uint8Array): Result<RowRecord, MalformedRecord> {
+  return readRecord(bytes, false);
+}
+
+/** A record from {@link packRecord}'s bytes or {@link encodeRecord}'s, whichever `bytes` holds. */
+export function unpackRecord(bytes: Uint8Array): Result<RowRecord, MalformedRecord> {
+  return readRecord(bytes, true);
+}
+
+function readRecord(bytes: Uint8Array, packed: boolean): Result<RowRecord, MalformedRecord> {
   return Result.gen(function* () {
     const value = yield* decodeCbor(bytes).mapError(
       (e) => new MalformedRecord({ message: e.message }),
@@ -64,13 +105,16 @@ export function decodeRecord(bytes: Uint8Array): Result<RowRecord, MalformedReco
     if (!Array.isArray(value) || value.length !== 4) return malformed("record is not a quadruple");
     const [cellsValue, writeValue, deleteValue, partitionValue] = value;
     if (!Array.isArray(cellsValue)) return malformed("cells are not an array");
-    const cells = new Map<ColumnName, Cell>();
-    for (const entry of cellsValue) {
-      const [column, cell] = yield* decodeCell(entry);
-      cells.set(column, cell);
-    }
     const writeStamp = yield* optionalStamp(writeValue);
     const deleteStamp = yield* optionalStamp(deleteValue);
+    const cells = new Map<ColumnName, Cell>();
+    // a run of cells written by one event shares one stamp object, as the fold that made it did
+    let last = writeStamp;
+    for (const entry of cellsValue) {
+      const [column, cell] = yield* decodeCell(entry, packed ? writeStamp : undefined, last);
+      cells.set(column, cell);
+      last = cell.stamp;
+    }
     const stamped = withStamps(cells, writeStamp, deleteStamp);
     if (partitionValue === null) return Result.ok(stamped);
     if (!isString(partitionValue)) return malformed("partition is not text");
@@ -93,15 +137,28 @@ function withStamps(
   return { cells };
 }
 
-function decodeCell(value: CborValue): Result<readonly [ColumnName, Cell], MalformedRecord> {
-  if (!Array.isArray(value) || value.length !== 3) return malformed("cell is not a triple");
+/**
+ * One cell. `implied` is the stamp a packed `[column, value]` pair stands for, and `undefined` where
+ * only a triple is a cell; `last` is the stamp the cell before it decoded to, handed back again
+ * when this one is the same.
+ */
+function decodeCell(
+  value: CborValue,
+  implied: Stamp | undefined,
+  last: Stamp | undefined,
+): Result<readonly [ColumnName, Cell], MalformedRecord> {
+  if (!Array.isArray(value)) return malformed("cell is not a triple");
+  if (value.length === 2 && implied === undefined) return malformed("cell is not a triple");
+  if (value.length !== 3 && value.length !== 2) return malformed("cell is not a triple");
   const [column, cellValue, stampValue] = value;
   if (!isString(column)) return malformed("column name is not text");
   return Result.gen(function* () {
-    const decoded = yield* cellFromCbor(cellValue).mapError(
+    const decoded = yield* cellFromCbor(cellValue ?? null).mapError(
       (e) => new MalformedRecord({ message: e.message }),
     );
-    const stamp = yield* stampFromCbor(stampValue);
+    const read = stampValue === undefined ? implied : yield* stampFromCbor(stampValue);
+    if (read === undefined) return malformed("cell has no stamp");
+    const stamp = last !== undefined && compareStamp(read, last) === 0 ? last : read;
     // SAFETY: column naming rules are owned by the schema; the cache only requires text
     return Result.ok([column as ColumnName, { value: decoded, stamp }] as const);
   });

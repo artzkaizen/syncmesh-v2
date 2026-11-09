@@ -314,6 +314,9 @@ export async function measureTenant(options: TenantOptions): Promise<TenantResul
 
   await phase("boot (reopen persisted state)", async (detail) => {
     await authorityStore.close();
+    // a restart: the engine that folded the tenant is gone before the next one opens
+    authority = undefined;
+    Bun.gc(true);
     authorityStore = await openBackend(options, options.backend, "authority");
     authority = await engineOn(authorityStore, AUTHORITY);
     detail.rowsInMemory = TABLES.reduce(

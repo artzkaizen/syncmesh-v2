@@ -2,7 +2,7 @@ import type { Coverage, EventStore, StateCorrupt, StoredEvent } from "@syncmesh/
 import type { Hlc, SeqNum } from "@syncmesh/kernel";
 
 import { DEFAULT_RECENT, LogTorn, StoreFailure } from "@syncmesh/engine";
-import { eventId, parseEventId } from "@syncmesh/kernel";
+import { eventId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 
@@ -13,7 +13,9 @@ import type { Hole } from "./holes.js";
 import { driverDialect } from "./dialect.js";
 import { evictEvents } from "./evict.js";
 import { createFloorReads } from "./floor-reads.js";
+import { createHolding } from "./held-events.js";
 import { readHoles, unaccounted } from "./holes.js";
+import { insertRows } from "./many-rows.js";
 import { attempt, failure, headerRow, hlcRow, inTransaction } from "./sql.js";
 import { parseCoverage, parseSeqCell } from "./sql.js";
 
@@ -233,23 +235,22 @@ export function sqlEventStore(
   };
 
   /**
-   * Inserts one entry and keeps the gap table true (D39): an event landing above its author's
-   * highest held sequence plus one records the run between as a gap the log was written with, and
-   * one landing below it fills whatever gap held it. `heads` carries each author's highest
-   * sequence through a batch, so a run appended in order asks the database once per author.
+   * Keeps the gap table true for one entry (D39): one landing above its author's highest sequence
+   * plus one records the run between as a gap, one below it fills the gap that held it. `heads`
+   * carries each author's head through the batch: the database is asked once per author.
    */
-  const insert = async (entry: StoredEvent, heads: Map<string, number>) => {
+  const placeInRun = async (entry: StoredEvent, heads: Map<string, number>) => {
     const { peerId, seqNum } = entry.event;
     const local = entry.event.local === true ? 1 : 0;
     const key = `${local}:${peerId}`;
     const head =
       heads.get(key) ?? Number((await driver.all(SQL.selectLastSeq, [peerId, local]))[0]?.[0] ?? 0);
-    await driver.run(SQL.insert, params(entry));
     if (seqNum > head + 1) await driver.run(GAPS.insert, [peerId, local, head + 1, seqNum - 1]);
     else if (seqNum < head) await fill(peerId, local, seqNum);
     heads.set(key, Math.max(head, seqNum));
   };
 
+  const holding = createHolding(driver, SQL.selectHeld);
   const reader = {
     driver,
     nested: options.nested === true,
@@ -261,23 +262,16 @@ export function sqlEventStore(
   const appendAll = async (entries: readonly StoredEvent[]) => {
     await hold(driver, GAPS.lock, entries);
     const heads = new Map<string, number>();
-    for (const entry of entries) await insert(entry, heads);
+    for (const entry of entries) await placeInRun(entry, heads);
+    await insertRows(driver, SQL.insert, entries.map(params));
   };
 
   const store: EventStore = {
     append: (entry) => attempt("append failed", () => transaction(() => appendAll([entry]))),
     appendBatch: (entries) =>
       attempt("appendBatch failed", () => transaction(() => appendAll(entries))),
-    has: (id) =>
-      Result.gen(async function* () {
-        const { peerId, seqNum, local } = yield* parseEventId(id).mapError(
-          failure("malformed event id"),
-        );
-        const rows = yield* Result.await(
-          query("has failed", SQL.selectHas, [peerId, seqNum, local ? 1 : 0]),
-        );
-        return Result.ok(rows.length > 0);
-      }),
+    has: (id) => holding([id]).then((held) => held.map((ids) => ids.has(id))),
+    holding,
     all: () =>
       whole(
         () => query("all failed", SQL.selectAll).then((rows) => rows.andThen(decodeRows)),

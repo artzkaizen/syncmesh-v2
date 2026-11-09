@@ -1,9 +1,10 @@
 import type { RowWrite, WriteKeys } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 
-import type { SqlDialect, SqlDriver } from "./driver.js";
+import type { SqlDialect, SqlDriver, SqlValue } from "./driver.js";
 
 import { driverDialect, namespaceDdl, stateTable } from "./dialect.js";
+import { insertRows } from "./many-rows.js";
 
 /**
  * Where each row's own write got to, as a table a query can join (book ch. 10).
@@ -89,21 +90,17 @@ export function rowSyncTable(driver: SqlDriver): RowSync {
 
   return {
     apply: async (rows) => {
+      const stamped: SqlValue[][] = [];
       for (const { table, key, record } of rows) {
         const stamp = record.writeStamp;
         // a row with no write stamp was never written through an event — nothing to say about it
         if (stamp === undefined) {
-          await driver.run(remove, [String(table), String(key)]);
+          await driver.run(remove, [table, key]);
           continue;
         }
-        await driver.run(upsert, [
-          String(table),
-          String(key),
-          String(stamp.peer),
-          stamp.hlc[0].epochMilliseconds,
-          stamp.hlc[1],
-        ]);
+        stamped.push([table, key, stamp.peer, stamp.hlc[0].epochMilliseconds, stamp.hlc[1]]);
       }
+      await insertRows(driver, upsert, stamped);
     },
     acknowledge: (hlcMs, hlcLogical) => driver.run(watermark, [hlcMs, hlcLogical]),
     clear: async () => {

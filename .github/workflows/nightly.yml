@@ -9,11 +9,11 @@ on:
   workflow_dispatch:
     inputs:
       rows:
-        description: "scale-tenant sizes, space-separated"
-        default: "100000 1000000 10000000"
+        description: "scale-tenant sizes, comma-separated; each runs as its own job"
+        default: "100000,1000000,10000000"
       budget-minutes:
-        description: "per-size wall-clock budget for scale-tenant"
-        default: "100"
+        description: "per-size wall-clock budget for the scale-tenant fold"
+        default: "80"
 
 concurrency:
   group: ${{ github.workflow }}
@@ -50,11 +50,14 @@ jobs:
 
   scale-tenant:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    # one rung per job: a runner is stopped at about 110 minutes, and the ten-million rung needs
+    # all of one (gaps O17)
+    timeout-minutes: 115
     strategy:
       fail-fast: false
       matrix:
         backend: [sqlite, pglite, postgres]
+        rows: ${{ fromJSON(format('[{0}]', github.event.inputs.rows || '100000,1000000,10000000')) }}
     services:
       postgres:
         image: postgres:18
@@ -76,20 +79,24 @@ jobs:
           node-version: 24
       - run: bun install --frozen-lockfile
       - run: bunx vp run -r build
-      - name: ladder
-        # each size runs on its own so one that dies (the budget, the OOM killer) still leaves the
-        # ones before it; the step fails at the end if any size did
+      - name: runner
         run: |
-          failed=0
-          for rows in ${{ github.event.inputs.rows || '100000 1000000 10000000' }}; do
-            bun run --cwd bench scale-tenant -- --rows "$rows" --backend ${{ matrix.backend }} \
-              --budget-minutes ${{ github.event.inputs.budget-minutes || '100' }} || failed=1
-          done
+          nproc
+          free -m
+          df -h / /tmp
+      - name: rung
+        run: |
+          bun run --cwd bench scale-tenant -- --rows ${{ matrix.rows }} --backend ${{ matrix.backend }} \
+            --budget-minutes ${{ github.event.inputs.budget-minutes || '80' }}
+      - name: summary
+        if: always()
+        run: |
           cat bench/.bench/*.md >> "$GITHUB_STEP_SUMMARY" || true
-          exit $failed
+          free -m
+          df -h / /tmp
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: scale-tenant-${{ matrix.backend }}
+          name: scale-tenant-${{ matrix.backend }}-${{ matrix.rows }}
           path: bench/.bench/
           retention-days: 30

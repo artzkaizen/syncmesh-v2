@@ -47,6 +47,15 @@ export interface EventSql {
    */
   readonly selectStranded: string;
   readonly selectHas: string;
+  /**
+   * Which of a list of events the log holds, as `peer, seq, local` rows: one statement whatever the
+   * list's length. Binds `(json)`, the list as a JSON array of `{ peer, seq, local }` objects.
+   */
+  readonly selectHeld: string;
+  /**
+   * The highest sequence an author has in the log or under its compaction floor, read off the end
+   * of the primary key rather than the author's whole run. Binds `(peer, local)`.
+   */
   readonly selectLastSeq: string;
   readonly selectCompactable: string;
   readonly selectCompactableStamp: string;
@@ -102,7 +111,12 @@ export interface GapSql {
 export interface StateSql {
   readonly upsertRow: string;
   readonly upsertCursor: string;
-  readonly selectRows: string;
+  /**
+   * One page of the cached rows in key order, after a `(tbl, key)`: binds `(tbl, key, limit)`, and
+   * the empty pair `("", "")` starts before every row. A cache of millions loads as pages rather
+   * than as one result held whole beside the state it becomes.
+   */
+  readonly selectRowsAfter: string;
   readonly selectCursors: string;
   readonly anyCursor: string;
   readonly clearRows: string;

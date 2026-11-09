@@ -178,8 +178,12 @@ export const POSTGRES: Dialect = {
     selectStranded: `SELECT core, local, sig FROM syncmesh.events
       WHERE sig IS NULL AND local = 0 AND peer <> $1 ORDER BY peer, seq`,
     selectHas: `SELECT 1 FROM syncmesh.events WHERE peer = $1 AND seq = $2 AND local = $3 LIMIT 1`,
+    selectHeld: `SELECT e.peer, e.seq, e.local
+      FROM jsonb_to_recordset($1::text::jsonb) AS h(peer text, seq bigint, local integer)
+      JOIN syncmesh.events e ON e.peer = h.peer AND e.seq = h.seq AND e.local = h.local`,
     selectLastSeq: `SELECT MAX(seq) FROM (
-      SELECT seq FROM syncmesh.events WHERE peer = $1 AND local = $2
+      SELECT (SELECT seq FROM syncmesh.events WHERE peer = $1 AND local = $2
+        ORDER BY seq DESC LIMIT 1) AS seq
       UNION ALL SELECT seq FROM syncmesh.compaction WHERE peer = $1 AND local = $2) AS u`,
     selectCompactable: `SELECT e.peer, MAX(e.seq), COUNT(*) ${PG_COMPACTABLE} GROUP BY e.peer`,
     selectCompactableStamp: `SELECT e.hlc_ms, e.hlc_logical ${PG_COMPACTABLE} AND e.peer = $4
@@ -207,7 +211,8 @@ export const POSTGRES: Dialect = {
       ON CONFLICT (tbl, key) DO UPDATE SET record = excluded.record`,
     upsertCursor: `INSERT INTO syncmesh.cursors (peer, local, seq) VALUES ($1, $2, $3)
       ON CONFLICT (peer, local) DO UPDATE SET seq = excluded.seq`,
-    selectRows: `SELECT tbl, key, record FROM syncmesh.state_rows`,
+    selectRowsAfter: `SELECT tbl, key, record FROM syncmesh.state_rows
+      WHERE (tbl, key) > ($1, $2) ORDER BY tbl, key LIMIT $3`,
     selectCursors: `SELECT peer, local, seq FROM syncmesh.cursors`,
     anyCursor: `SELECT 1 FROM syncmesh.cursors LIMIT 1`,
     clearRows: `DELETE FROM syncmesh.state_rows`,

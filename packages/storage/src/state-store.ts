@@ -1,15 +1,15 @@
-import type { Coverage, StateStore } from "@syncmesh/engine";
+import type { Coverage, RowWrite, StateStore } from "@syncmesh/engine";
 import type { RowKey, State, TableName, TableState } from "@syncmesh/kernel";
 
-import { StateCorrupt, type StoreFailure } from "@syncmesh/engine";
+import { StateCorrupt, packedTable, type StoreFailure } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
-import { decodeRecord, encodeRecord } from "@syncmesh/wire";
+import { packRecord, unpackRecord } from "@syncmesh/wire";
 
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 import type { Projection } from "./projection.js";
 
 import { driverDialect } from "./dialect.js";
-import { lazyTable } from "./lazy-state.js";
+import { insertRows } from "./many-rows.js";
 import {
   CURSOR_FLOOR,
   CURSOR_HELD,
@@ -20,6 +20,9 @@ import {
 } from "./sql.js";
 
 const corrupt = (message: string) => new StateCorrupt({ message });
+
+/** Cached rows per read at boot. */
+const LOAD_PAGE = 50_000;
 
 /**
  * Where a stored row belongs and the bytes it holds, without reading inside them.
@@ -40,7 +43,7 @@ function parseStateRow(
 /**
  * One row of a table, decoded on the spot, so a cache the build can no longer read is found here.
  *
- * The rest of the cache is decoded lazily ({@link lazyTable}), which on its own would move the
+ * The rest of the cache is decoded when it is read (`packedTable`), which on its own would move the
  * discovery of a damaged cache to whenever a row was first touched — and the engine's answer to a
  * damaged cache is to clear it and rebuild from the log, which it can only do while it is still
  * opening. The realistic damage is not one rotted row but a *format* the running build no longer
@@ -51,11 +54,21 @@ function parseStateRow(
  */
 function firstDecodes(records: ReadonlyMap<RowKey, Uint8Array>): Result<void, StateCorrupt> {
   for (const record of records.values())
-    return decodeRecord(record)
+    return unpackRecord(record)
       .mapError((e) => corrupt(e.message))
       .map(() => undefined);
   return Result.ok(undefined);
 }
+
+/**
+ * Each row once, the last write of a key kept: one multi-row upsert may not meet a key twice on
+ * Postgres, and the last write is what a statement per row would have left.
+ */
+const onePerKey = (rows: readonly RowWrite[]): readonly RowWrite[] => {
+  const kept = new Map<string, RowWrite>();
+  for (const row of rows) kept.set(`${row.table}\u0000${row.key}`, row);
+  return kept.size === rows.length ? rows : [...kept.values()];
+};
 
 export interface SqlStateStoreOptions {
   /** Also writes each committed row into the app's own tables (D20); `tablesProjection` builds one. */
@@ -89,20 +102,26 @@ export function sqlStateStore(
       query("isEmpty failed", SQL.anyCursor).then((r) => r.map((rows) => rows.length === 0)),
     loadAll: () =>
       Result.gen(async function* () {
-        const rows = yield* Result.await(query("loadAll failed", SQL.selectRows));
         const stored = new Map<TableName, Map<RowKey, Uint8Array>>();
-        for (const row of rows) {
-          const [table, key, record] = yield* parseStateRow(row);
-          const records = stored.get(table) ?? new Map<RowKey, Uint8Array>();
-          records.set(key, record);
-          stored.set(table, records);
+        let after: readonly [string, string] = ["", ""];
+        for (;;) {
+          const rows = yield* Result.await(
+            query("loadAll failed", SQL.selectRowsAfter, [...after, LOAD_PAGE]),
+          );
+          for (const row of rows) {
+            const [table, key, record] = yield* parseStateRow(row);
+            const records = stored.get(table) ?? new Map<RowKey, Uint8Array>();
+            records.set(key, record);
+            stored.set(table, records);
+            after = [table, key];
+          }
+          if (rows.length < LOAD_PAGE) break;
         }
-        // the blobs go in undecoded: see `lazyTable` for why, and for the one caller that
-        // deliberately decodes a whole table
+        // the blobs go in undecoded, and each is decoded when the engine first reads its row
         const state = new Map<TableName, TableState>();
         for (const [table, records] of stored) {
           yield* firstDecodes(records);
-          state.set(table, lazyTable(records));
+          state.set(table, packedTable(records));
         }
         return Result.ok<State>(state);
       }),
@@ -118,8 +137,11 @@ export function sqlStateStore(
     commit: (rows, coverage) =>
       attempt("commit failed", () =>
         transaction(async () => {
-          for (const { table, key, record } of rows)
-            await driver.run(SQL.upsertRow, [table, key, encodeRecord(record)]);
+          await insertRows(
+            driver,
+            SQL.upsertRow,
+            onePerKey(rows).map(({ table, key, record }) => [table, key, packRecord(record)]),
+          );
           for (const [peer, seq] of coverage.synced)
             await driver.run(SQL.upsertCursor, [peer, 0, seq]);
           for (const [peer, seq] of coverage.local)
@@ -135,7 +157,7 @@ export function sqlStateStore(
           // did not, or the other way round, is exactly the mismatch D23 exists to prevent
           if (coverage.scope === undefined) await driver.run(SQL.clearScope);
           else await driver.run(SQL.upsertScope, [coverage.scope]);
-          await projection?.apply(rows);
+          await projection?.apply(onePerKey(rows));
         }),
       ),
     remove: (keys) =>

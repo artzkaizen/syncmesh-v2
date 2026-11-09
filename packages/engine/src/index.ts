@@ -169,6 +169,7 @@ export type { PolicySource } from "./can.js";
 export { can, why } from "./can.js";
 export type { ExplainedRule, PolicyWhy } from "./policy-why.js";
 export { createPolicyDenied } from "./policy-why.js";
+export { WARM_ROWS, packedTable } from "./packed-rows.js";
 export type { Installed, Snapshot, SnapshotOptions, SnapshotRow } from "./snapshot.js";
 export { installSnapshot, partitionsIn, stateSnapshot, windowRows } from "./snapshot.js";
 export type { ChunkDeps, FeedApi, FeedState, FeedTracker } from "./feed.js";

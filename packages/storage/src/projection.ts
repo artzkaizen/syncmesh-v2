@@ -3,12 +3,13 @@ import type { Table } from "@syncmesh/schema";
 
 import { counterValue, isVisible } from "@syncmesh/kernel";
 
-import type { SqlDriver } from "./driver.js";
+import type { SqlDriver, SqlValue } from "./driver.js";
 import type { RowSync } from "./row-sync.js";
 
 import { driverDialect } from "./dialect.js";
 import { folding } from "./guard.js";
 import { tableColumns, quote, valueColumns } from "./identifiers.js";
+import { insertRows } from "./many-rows.js";
 
 /** A cell in the form the column's SQL type holds it on SQLite — what the fold writes and what a compiled rule compares against. */
 
@@ -85,6 +86,8 @@ export function tablesProjection(
     apply: async (rows) => {
       // the same commit the rows land in: a query cannot see a row without its sync state
       await rowSync?.apply(rows);
+      // per table, one multi-row upsert for what is visible: a round trip per chunk, not per row
+      const upserts = new Map<string, SqlValue[][]>();
       for (const { table, key, record } of rows) {
         const plan = statements.get(String(table));
         if (plan === undefined) continue;
@@ -99,8 +102,11 @@ export function tablesProjection(
           return dialect.cell(column.def.kind, value);
         });
         if (partitionColumn !== false) values.push(record.partition ?? null);
-        await driver.run(plan.upsert, values);
+        const held = upserts.get(plan.upsert);
+        if (held === undefined) upserts.set(plan.upsert, [values]);
+        else held.push(values);
       }
+      for (const [upsert, values] of upserts) await insertRows(driver, upsert, values);
     },
     derive: async (rows) => {
       for (const { table, key, values } of rows) {

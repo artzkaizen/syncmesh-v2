@@ -12,7 +12,6 @@ import {
   type LineageId,
   type PeerId,
   type RowKey,
-  type RowRecord,
   type SyncEvent,
 } from "@syncmesh/kernel";
 import { partition, syncSchema, t } from "@syncmesh/schema";
@@ -27,6 +26,7 @@ import type { DocWrite } from "../tx.js";
 import { openEngine } from "../boot.js";
 import { tableDigests } from "../digest.js";
 import { docDigests } from "../doc-log.js";
+import { packedTable } from "../packed-rows.js";
 import { createMemoryStateStore } from "../state-store.js";
 import { createValidator } from "../validate.js";
 import {
@@ -463,22 +463,14 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
     const stateStore = createMemoryStateStore();
     const a = setup(PEER_A, 100, { docs: DOCS, validate, stateStore });
     await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
-    /** A table of the cache that has not been decoded: reading any row of it fails the test. */
-    class Undecoded extends Map<RowKey, RowRecord> {
-      override get(): never {
-        throw new Error("a table with no doc column was decoded at boot");
-      }
-      override [Symbol.iterator](): never {
-        return this.get();
-      }
-      override entries(): never {
-        return this.get();
-      }
-    }
+    // a table of the cache as the store loads it, packed, whose one row cannot be decoded:
+    // reading it panics, so a boot that decodes a table with no doc column fails
+    // SAFETY: a fixture key, a brand over the string it names
+    const undecoded = packedTable(new Map([["p1" as RowKey, Uint8Array.of(1, 2, 3)]]));
     const lazy: typeof stateStore = {
       ...stateStore,
       loadAll: async () =>
-        (await stateStore.loadAll()).map((state) => new Map([...state, [PLAIN, new Undecoded()]])),
+        (await stateStore.loadAll()).map((state) => new Map([...state, [PLAIN, undecoded]])),
     };
     const booted = await openEngine({
       peerId: PEER_A,

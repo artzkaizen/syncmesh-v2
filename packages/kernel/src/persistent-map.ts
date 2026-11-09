@@ -144,11 +144,171 @@ class PersistentMap<K, V> implements ReadonlyMap<K, V> {
   get [Symbol.toStringTag](): string {
     return "Map";
   }
+
+  /**
+   * Binds `key` to `to` in the map every version of `version`'s lineage shares, without making a
+   * version, when it is bound there to `from` and to nothing else. `to` must be the same entry
+   * spelled differently: every version that reads it gets what it had.
+   */
+  static respell<K, V>(version: PersistentMap<K, V>, key: K, from: V, to: V): boolean {
+    const { map } = version.#store;
+    if (map.get(key) !== from) return false;
+    map.set(key, to);
+    return true;
+  }
 }
+
+/**
+ * How a {@link createPackedMap} holds the values it is not using: `pack` and `unpack` are
+ * inverses, and `isPacked` tells a held form from a value.
+ */
+export interface Packing<V, P> {
+  readonly pack: (value: V) => P;
+  readonly unpack: (packed: P) => V;
+  readonly isPacked: (slot: V | P) => slot is P;
+  /** How many values one lineage keeps unpacked: the latest written or read, oldest packed first. */
+  readonly warm: number;
+}
+
+/** What every version of one packed lineage shares. */
+interface Warmth<K, V, P> {
+  readonly packing: Packing<V, P>;
+  /** Unpacked now: the keys whose shared slot holds the value itself, with that value. */
+  readonly warm: Map<K, V>;
+  /** The warm keys in the order they became warm, from `head` on: what packs first. */
+  readonly order: K[];
+  head: number;
+}
+
+/**
+ * A persistent map that holds most of its values packed and unpacks one when it is read, so a
+ * table of millions of rows costs its packed bytes and not its objects. Reads, sizes and
+ * iteration answer as the unpacked map would; `get` hands back one object per key for as long as
+ * the key stays warm.
+ */
+class PackedMap<K, V, P> implements ReadonlyMap<K, V> {
+  readonly #slots: PersistentMap<K, V | P>;
+  readonly #warmth: Warmth<K, V, P>;
+
+  constructor(slots: PersistentMap<K, V | P>, warmth: Warmth<K, V, P>) {
+    this.#slots = slots;
+    this.#warmth = warmth;
+  }
+
+  /** This version with `key` bound to `value`; `this` is untouched. */
+  with(key: K, value: V): PackedMap<K, V, P> {
+    const next = new PackedMap(this.#slots.with(key, value), this.#warmth);
+    next.#warm(key, value);
+    return next;
+  }
+
+  /**
+   * Keeps `value` unpacked, and packs the value that became warm first once there are too many: a
+   * queue, not a recency list, so a write costs the same however many rows are warm.
+   */
+  #warm(key: K, value: V): void {
+    const warmth = this.#warmth;
+    const { warm, order, packing } = warmth;
+    if (!warm.has(key)) order.push(key);
+    warm.set(key, value);
+    while (warm.size > packing.warm && warmth.head < order.length) {
+      const oldest = order[warmth.head];
+      warmth.head += 1;
+      const held = oldest === undefined ? undefined : warm.get(oldest);
+      if (oldest === undefined || held === undefined) continue;
+      warm.delete(oldest);
+      PersistentMap.respell(this.#slots, oldest, held, packing.pack(held));
+    }
+    if (warmth.head > packing.warm) {
+      order.splice(0, warmth.head);
+      warmth.head = 0;
+    }
+  }
+
+  get(key: K): V | undefined {
+    const slot = this.#slots.get(key);
+    const { packing } = this.#warmth;
+    if (slot === undefined) return undefined;
+    if (!packing.isPacked(slot)) return slot;
+    const value = packing.unpack(slot);
+    if (PersistentMap.respell(this.#slots, key, slot, value)) this.#warm(key, value);
+    return value;
+  }
+
+  has(key: K): boolean {
+    return this.#slots.has(key);
+  }
+
+  get size(): number {
+    return this.#slots.size;
+  }
+
+  /** Unpacks as it walks and keeps nothing warm: a walk of every row is not a reason to hold them. */
+  *entries(): MapIterator<[K, V]> {
+    const { packing } = this.#warmth;
+    for (const [key, slot] of this.#slots.entries())
+      yield [key, packing.isPacked(slot) ? packing.unpack(slot) : slot];
+    return undefined;
+  }
+
+  *keys(): MapIterator<K> {
+    yield* this.#slots.keys();
+    return undefined;
+  }
+
+  *values(): MapIterator<V> {
+    for (const [, value] of this.entries()) yield value;
+    return undefined;
+  }
+
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.entries();
+  }
+
+  forEach(callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void): void {
+    for (const [key, value] of this.entries()) callback(value, key, this);
+  }
+
+  get [Symbol.toStringTag](): string {
+    return "Map";
+  }
+}
+
+/**
+ * `slots` as a persistent map whose values past `packing.warm` are held packed. A slot may already
+ * be packed (bytes read back from a store); a value written through {@link withEntry} starts
+ * warm, and so does every unpacked value of `slots` up to `packing.warm`, the latest kept. A map
+ * this already made comes back as it is; any other is copied, so no handle to the original
+ * lineage ever reads a packed slot.
+ *
+ * @example
+ * const rows = createPackedMap(stored, { pack: encode, unpack: decode, isPacked, warm: 50_000 });
+ */
+export function createPackedMap<K, V, P>(
+  slots: ReadonlyMap<K, V | P>,
+  packing: Packing<V, P>,
+): ReadonlyMap<K, V> {
+  if (slots instanceof PackedMap) return slots;
+  const map = new Map(slots);
+  const unpacked: [K, V][] = [];
+  for (const [key, slot] of map) if (!packing.isPacked(slot)) unpacked.push([key, slot]);
+  const cold = Math.max(0, unpacked.length - packing.warm);
+  for (const [key, value] of unpacked.slice(0, cold)) map.set(key, packing.pack(value));
+  const kept = unpacked.slice(cold);
+  return new PackedMap(new PersistentMap<K, V | P>({ map, epoch: 0 }), {
+    packing,
+    warm: new Map(kept),
+    order: kept.map(([key]) => key),
+    head: 0,
+  });
+}
+
+/** Whether `map` came from {@link createPackedMap}. */
+export const isPackedMap = <K, V>(map: ReadonlyMap<K, V>): boolean => map instanceof PackedMap;
 
 /**
  * `map` with `key` bound to `value`, leaving `map` itself untouched — O(1) once `map` came from
  * here, and one copy the first time a plain `Map` (a decoded snapshot, a loaded table) is written.
  */
 export const withEntry = <K, V>(map: ReadonlyMap<K, V>, key: K, value: V): ReadonlyMap<K, V> =>
-  PersistentMap.from(map).with(key, value);
+  map instanceof PackedMap ? map.with(key, value) : PersistentMap.from(map).with(key, value);

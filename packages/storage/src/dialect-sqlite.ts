@@ -224,8 +224,12 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
       selectStranded: `SELECT core, local, sig FROM ${t("events")}
         WHERE sig IS NULL AND local = 0 AND peer <> ? ORDER BY peer, seq`,
       selectHas: `SELECT 1 FROM ${t("events")} WHERE peer = ? AND seq = ? AND local = ? LIMIT 1`,
+      selectHeld: `SELECT e.peer, e.seq, e.local FROM json_each(?) AS h
+        JOIN ${t("events")} AS e ON e.peer = json_extract(h.value, '$.peer')
+          AND e.seq = json_extract(h.value, '$.seq') AND e.local = json_extract(h.value, '$.local')`,
       selectLastSeq: `SELECT MAX(seq) FROM (
-        SELECT seq FROM ${t("events")} WHERE peer = ?1 AND local = ?2
+        SELECT (SELECT seq FROM ${t("events")} WHERE peer = ?1 AND local = ?2
+          ORDER BY seq DESC LIMIT 1) AS seq
         UNION ALL SELECT seq FROM ${t("compaction")} WHERE peer = ?1 AND local = ?2)`,
       selectCompactable: `SELECT peer, MAX(seq), COUNT(*) ${compactable} GROUP BY peer`,
       selectCompactableStamp: `SELECT hlc_ms, hlc_logical ${compactable} AND peer = ?
@@ -249,7 +253,8 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
     state: {
       upsertRow: `INSERT OR REPLACE INTO syncmesh_state_rows (tbl, key, record) VALUES (?, ?, ?)`,
       upsertCursor: `INSERT OR REPLACE INTO syncmesh_cursors (peer, local, seq) VALUES (?, ?, ?)`,
-      selectRows: `SELECT tbl, key, record FROM syncmesh_state_rows`,
+      selectRowsAfter: `SELECT tbl, key, record FROM syncmesh_state_rows
+        WHERE (tbl, key) > (?, ?) ORDER BY tbl, key LIMIT ?`,
       selectCursors: `SELECT peer, local, seq FROM syncmesh_cursors`,
       anyCursor: `SELECT 1 FROM syncmesh_cursors LIMIT 1`,
       clearRows: `DELETE FROM syncmesh_state_rows`,

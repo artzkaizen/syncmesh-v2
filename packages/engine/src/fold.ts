@@ -15,6 +15,7 @@ import type { TelemetryEvent } from "./telemetry.js";
 import { foldable } from "./columns.js";
 import { docAppends, recordDocs } from "./doc-log.js";
 import { relabelMoved } from "./lineage-moves.js";
+import { packState } from "./packed-rows.js";
 import { rowWrites, eventWriteKeys } from "./state-store.js";
 import { timed } from "./telemetry.js";
 
@@ -146,7 +147,8 @@ const NO_KEYS: FoldBatch = {
 
 export function createFoldPath(deps: FoldDeps): FoldPath {
   const { merge, coverage, feeds, folds, telemetry, errors, atomic, initial, hasAdapter } = deps;
-  let state = initial;
+  // every table packed past its warm rows, so a replica costs its bytes and not its objects
+  let state = packState(initial);
   const report = (written: Result<void, StoreFailure>) => {
     if (written.isOk()) return;
     if (atomic) throw written.error;
@@ -171,6 +173,7 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
         entries.map((entry) => entry.event),
         hasAdapter,
       );
+      state = packState(state);
       const appeared = hiddenKeys(state, hidden, true);
       return {
         source,
@@ -191,7 +194,7 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
 
   return {
     getState: () => state,
-    setState: (next) => void (state = next),
+    setState: (next) => void (state = packState(next)),
     fold,
     persist: async (batch, into) => {
       if (batch.eventCount === 0 || into === undefined) return;

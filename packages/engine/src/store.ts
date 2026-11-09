@@ -89,6 +89,14 @@ export interface EventStore {
   /** All or nothing where the backend can promise it; idempotent by event id. */
   readonly appendBatch: (entries: readonly StoredEvent[]) => Promise<Result<void, StoreFailure>>;
   readonly has: (id: EventId) => Promise<Result<boolean, StoreFailure>>;
+  /**
+   * Which of `ids` the log holds: what `has` answers one id at a time, in one read. Optional: a
+   * store whose events are objects in memory has nothing cheaper than `has` to offer, and
+   * declaring nothing is how it says so.
+   */
+  readonly holding?: (
+    ids: readonly EventId[],
+  ) => Promise<Result<ReadonlySet<EventId>, StoreFailure>>;
   readonly all: () => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   /**
    * The log's tail by stamp, newest first, as headers and never as entries — both scopes, so a
