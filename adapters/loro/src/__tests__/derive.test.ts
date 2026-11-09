@@ -634,6 +634,108 @@ describe("derived columns catch up with the document between flushes (gaps U25)"
   });
 });
 
+describe("the document column holds the snapshot (RFC-0023 §6.1)", () => {
+  /** The bytes the app's `content` column holds for the note, or `null`. */
+  const column = async (n: StoredNode) => {
+    const [found] = await n.driver.all(`SELECT content FROM notes WHERE id = ?`, ["n1"]);
+    const held = found?.[0];
+    return held instanceof Uint8Array ? held : null;
+  };
+  /** The document the column's bytes hold, read by a fresh replica. */
+  const read = (bytes: Uint8Array | null) => {
+    if (bytes === null) return undefined;
+    const doc = new LoroDoc();
+    doc.import(bytes);
+    return doc.getText("title").toString();
+  };
+
+  test("a materialisation writes the snapshot into the app's column, in the cover's commit", async () => {
+    const a = await storedNode(60);
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "In the column", "words");
+    (await doc.close()).unwrap();
+    // nothing materialised yet: the column is the empty document
+    expect(await column(a)).toBeNull();
+    (await a.documents.materialise(DOC)).unwrap();
+    const held = (await a.stores.docs.snapshotOf(DOC)).unwrap();
+    expect(await column(a)).toEqual(held?.bytes ?? null);
+    expect(read(await column(a))).toBe("In the column");
+    // the column is still the materialiser's: the app's own write to it is refused
+    const refused = await Result.tryPromise(async () =>
+      a.driver.run(`UPDATE notes SET content = ? WHERE id = ?`, [Uint8Array.of(1), "n1"]),
+    );
+    expect(refused.isErr()).toBe(true);
+    expect(a.errors).toEqual([]);
+  });
+
+  test("a joiner installing a checkpoint holds its snapshot in the column", async () => {
+    const a = await storedNode(62);
+    const b = await storedNode(63);
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "Checkpointed", "x");
+    (await doc.close()).unwrap();
+    const made = (
+      await a.documents.checkpoint(DOC, a.identity, hlcOf(a.now().epochMilliseconds, 0))
+    ).unwrap();
+    const link = createLink(a.engine, b.engine);
+    (await link.catchUp()).unwrap();
+    (await b.documents.install(made.signed.wire, a.identity.peerId, made.snapshot, DOC)).unwrap();
+    expect(await column(b)).toEqual(made.snapshot);
+    link.close();
+  });
+
+  test("a replace empties the column until the new lineage is materialised", async () => {
+    const a = await storedNode(64);
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "Before", "x");
+    (await doc.close()).unwrap();
+    (await a.documents.materialise(DOC)).unwrap();
+    expect(read(await column(a))).toBe("Before");
+    const template = new LoroDoc();
+    template.getText("title").insert(0, "Template");
+    template.commit();
+    (await a.documents.replace(DOC, template.export({ mode: "snapshot" }))).unwrap();
+    // the bytes held are of a lineage that no longer wins: the column claims none
+    expect(await column(a)).toBeNull();
+    (await a.documents.materialise(DOC)).unwrap();
+    expect(read(await column(a))).toBe("Template");
+    expect(a.errors).toEqual([]);
+  });
+
+  test("a row deleted and inserted again, or brought by a snapshot, gets the snapshot back", async () => {
+    const a = await storedNode(66);
+    const b = await storedNode(67);
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "Kept", "x");
+    (await doc.close()).unwrap();
+    (await a.documents.materialise(DOC)).unwrap();
+    (await a.engine.mutate(EDIT, (tx) => tx.delete(NOTES, N1), { partition: W1 })).unwrap();
+    expect(await a.row()).toBeUndefined();
+    await insertNote(a);
+    // the projection inserts the row without its document; the fold writes it back
+    expect(read(await column(a))).toBe("Kept");
+
+    // b holds the document's snapshot before it holds the row, as a joiner from pages does
+    const made = (
+      await a.documents.checkpoint(DOC, a.identity, hlcOf(a.now().epochMilliseconds, 0))
+    ).unwrap();
+    const [, edit] = (await a.engine.eventsSince(new Map())).unwrap();
+    if (edit === undefined) throw new Error("the edit was written");
+    (await b.engine.receive(edit)).unwrap();
+    (await b.documents.install(made.signed.wire, a.identity.peerId, made.snapshot, DOC)).unwrap();
+    expect(await b.row()).toBeUndefined();
+    // the row arrives as state, and the projection writes it without the document's bytes
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect(read(await column(b))).toBe("Kept");
+    const rows = (await b.driver.all(`SELECT id FROM notes`)).length;
+    expect(rows).toBe(1);
+  });
+});
+
 describe("an opaque host takes derived values from a device checkpoint (RFC-0023 §7.2)", () => {
   /** A device that edited the note, and a host without the adapter that folded the same events. */
   const pair = async (n: number, sealed = false, validate?: Validator, keys?: SealingKeys) => {

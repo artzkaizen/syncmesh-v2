@@ -148,6 +148,10 @@ export function sqlStateStore(
       ),
     ...(projection !== undefined && {
       derive: (rows) => attempt("derive failed", () => transaction(() => projection.derive(rows))),
+      writeDocColumns: (writes) =>
+        attempt("document column write failed", () =>
+          transaction(() => projection.writeDocColumns(writes)),
+        ),
     }),
     clear: () =>
       attempt("clear failed", () =>

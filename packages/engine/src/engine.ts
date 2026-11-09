@@ -244,6 +244,7 @@ export function createEngine(options: EngineOptions): Engine {
     atomic: atomic !== undefined,
     initial: boot?.state ?? emptyState(),
     hasAdapter,
+    docs: options.docs,
   });
   const { getState, setState, persist, persistCoverage, notify } = foldPath;
   const fold: typeof foldPath.fold = (entries, source) => {

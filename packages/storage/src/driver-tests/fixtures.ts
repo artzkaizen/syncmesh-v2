@@ -38,6 +38,7 @@ export const at = (ms: number) => Temporal.Instant.fromEpochMilliseconds(ms);
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- suite fixtures; naming rules are not under test */
 export const NOTES = "notes" as TableName;
 export const N1 = "n1" as RowKey;
+export const N2 = "n2" as RowKey;
 export const BODY = "body" as ColumnName;
 const PROCEDURE = "notes.create" as Procedure;
 const ZERO = 0 as Logical;

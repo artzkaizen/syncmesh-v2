@@ -1,4 +1,12 @@
-import type { Row, RowKey, RowRecord, State, SyncEvent, TableName } from "@syncmesh/kernel";
+import type {
+  ColumnName,
+  Row,
+  RowKey,
+  RowRecord,
+  State,
+  SyncEvent,
+  TableName,
+} from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
 
@@ -26,6 +34,19 @@ export interface DerivedRow {
   readonly values: Row;
 }
 
+/**
+ * One document column's bytes as the app's table holds them (RFC-0023 §6.1): the snapshot of the
+ * winning lineage the doc log's head covers, or none — `NULL`, the empty document — when no
+ * snapshot of that lineage is held. Never a cell, never in a digest, never on the wire.
+ */
+export interface DocColumnBytes {
+  readonly table: TableName;
+  readonly key: RowKey;
+  readonly column: ColumnName;
+  /** Absent writes `NULL`. */
+  readonly bytes?: Uint8Array;
+}
+
 /** Materialised rows and the coverage they reflect, so boot opens state instead of refolding the log. A cache: the log stays the truth. See RFC-0004. */
 export interface StateStore {
   readonly isEmpty: () => Promise<Result<boolean, StoreFailure>>;
@@ -49,6 +70,13 @@ export interface StateStore {
    * there yet is skipped. Absent where there are no app tables to write them to.
    */
   readonly derive?: (rows: readonly DerivedRow[]) => Promise<Result<void, StoreFailure>>;
+  /**
+   * Writes document columns' snapshots into the app's rows (RFC-0023 §6.1), outside the record and
+   * outside capture; a row not there yet is skipped. Absent where there are no app tables.
+   */
+  readonly writeDocColumns?: (
+    writes: readonly DocColumnBytes[],
+  ) => Promise<Result<void, StoreFailure>>;
 }
 
 export type WriteKeys = ReadonlyMap<TableName, ReadonlySet<RowKey>>;

@@ -1,4 +1,4 @@
-import type { AdapterId, MergeSpec, RowKey, State, TableName } from "@syncmesh/kernel";
+import type { AdapterId, DocColumns, MergeSpec, RowKey, State, TableName } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 
 import { applyChange, getRecord, docLineage, eventStamp, isVisible } from "@syncmesh/kernel";
@@ -8,11 +8,12 @@ import type { DocAddress, DocAppend, DocStore, LineageMove } from "./doc-log.js"
 import type { EngineError } from "./errors.js";
 import type { FeedTracker } from "./feed.js";
 import type { Hub } from "./listeners.js";
-import type { DerivedRow, StateStore, WriteKeys } from "./state-store.js";
+import type { DerivedRow, DocColumnBytes, StateStore, WriteKeys } from "./state-store.js";
 import type { StoreFailure, StoredEvent } from "./store.js";
 import type { TelemetryEvent } from "./telemetry.js";
 
 import { foldable } from "./columns.js";
+import { docColumnWrites, docsReseated } from "./doc-column.js";
 import { docAppends, recordDocs } from "./doc-log.js";
 import { relabelMoved } from "./lineage-moves.js";
 import { rowWrites, eventWriteKeys } from "./state-store.js";
@@ -67,6 +68,12 @@ export interface FoldDeps {
    * entry is labelled — `tail` or `adapter-missing` — and never what folds (RFC-0023 §6.4).
    */
   readonly hasAdapter: (adapter: AdapterId) => boolean;
+  /**
+   * The schema's document columns: a row the batch inserts or rewrites, and a document whose
+   * winning lineage it moves, has its column's bytes written again from the snapshot held
+   * (RFC-0023 §6.1).
+   */
+  readonly docs?: DocColumns | undefined;
 }
 
 /** Where a fold's persist step writes: the state cache and the doc log, whichever the engine has. */
@@ -115,6 +122,11 @@ export interface FoldPath {
   readonly derive: (rows: readonly DerivedRow[], into: PersistInto) => Promise<void>;
   /** After the derived write's transaction: one `derive` batch naming the rows it wrote. */
   readonly notifyDerived: (rows: readonly DerivedRow[]) => void;
+  /**
+   * Writes document columns' snapshots into the app's rows (RFC-0023 §6.1), reported as `persist`
+   * reports.
+   */
+  readonly writeDocColumns: (writes: readonly DocColumnBytes[], into: PersistInto) => Promise<void>;
 }
 
 /** The keys derived values were written under, joined onto what a fold already touched. */
@@ -145,7 +157,8 @@ const NO_KEYS: FoldBatch = {
 };
 
 export function createFoldPath(deps: FoldDeps): FoldPath {
-  const { merge, coverage, feeds, folds, telemetry, errors, atomic, initial, hasAdapter } = deps;
+  const { merge, coverage, feeds, folds, telemetry, errors, atomic, initial, hasAdapter, docs } =
+    deps;
   let state = initial;
   const report = (written: Result<void, StoreFailure>) => {
     if (written.isOk()) return;
@@ -203,6 +216,16 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
         report(await recordDocs(into.docs, batch.docs, docWinner, hasAdapter));
       if (into.docs !== undefined && batch.lineageMoves !== undefined)
         report(await relabelMoved(into.docs, batch.lineageMoves, docWinner, hasAdapter));
+      // after the relabel: the column follows the lineage the doc log now says wins
+      const reseated = docsReseated(batch, docs);
+      if (
+        into.docs !== undefined &&
+        into.state?.writeDocColumns !== undefined &&
+        reseated.length > 0
+      ) {
+        const writes = await docColumnWrites(into.docs, reseated, docWinner);
+        report(writes.isOk() ? await into.state.writeDocColumns(writes.value) : writes);
+      }
     },
     persistCoverage: async (into) => {
       if (into.state === undefined) return false;
@@ -219,6 +242,10 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
     },
     notifyDerived: (rows) => {
       if (rows.length > 0) folds.emit(withDerivedKeys(NO_KEYS, rows));
+    },
+    writeDocColumns: async (writes, into) => {
+      const write = into.state?.writeDocColumns;
+      if (writes.length > 0 && write !== undefined) report(await write(writes));
     },
   };
 }

@@ -90,7 +90,7 @@ export type { Narrowed, PurgeScope, Purged } from "./purge.js";
 export type { OwnFloor, OwnPosition } from "./own-position.js";
 export { adoptOwnPosition, createOwnFloor, ownPositionWarning } from "./own-position.js";
 export { openEngine } from "./boot.js";
-export type { DerivedRow, RowWrite, StateStore, WriteKeys } from "./state-store.js";
+export type { DerivedRow, DocColumnBytes, RowWrite, StateStore, WriteKeys } from "./state-store.js";
 export {
   StateCorrupt,
   allRows,
