@@ -47,7 +47,8 @@ export interface PageDocsDeps {
  * missing here, or whose checkpoint fails (operations pending, a sealed partition with no key),
  * leaves the page `complete: false`.
  *
- * Installing runs each checkpoint through `install` — the full check of {@link installCheckpoint},
+ * Installing runs each checkpoint whose producer may edit its row (`engine.mayEditDoc`, as for a
+ * provisional install) through `install` — the full check of {@link installCheckpoint},
  * version re-derived from the bytes — and answers whether every document of the rows that names a
  * lineage came with a checkpoint, and every document's head now covers at least what its
  * checkpoint covers, on the lineage it was of. A checkpoint refused because this
@@ -90,12 +91,14 @@ export function createPageDocs(deps: PageDocsDeps, producer: Identity) {
           ? [{ by, checkpoint, snapshot, claim: decoded.value.checkpoint }]
           : [];
       });
-      for (const { by, checkpoint, snapshot, claim } of claimed) {
+      // a producer that may not edit the row does not vouch for its document (§7.3, §11)
+      const trusted = claimed.filter(({ by, claim }) => engine.mayEditDoc(by, claim).isOk());
+      for (const { by, checkpoint, snapshot, claim } of trusted) {
         const { table, key, column } = claim;
         await deps.install(checkpoint, by, snapshot, { table, key, column });
       }
       const heads = await engine.docHeads();
-      if (heads.isErr() || claimed.length < checkpoints.length) return false;
+      if (heads.isErr() || trusted.length < checkpoints.length) return false;
       // every document a row names a lineage for came with a checkpoint: a page's `complete` is
       // the sender's word, and one left out would lose the updates a floor removed
       const carried = new Set(claimed.map(({ claim }) => docKey(claim)));

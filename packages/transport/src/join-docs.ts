@@ -42,9 +42,16 @@ export interface SnapshotDocs {
 export const PAGE_DOCS_BUDGET = DEFAULT_MAX_FRAME_BYTES / 2;
 
 /**
+ * The most an encoded page may be: a frame less room for the `snap-chunk` header around it and the
+ * session's seal (`SEAL_OVERHEAD`), with plenty to spare.
+ */
+export const PAGE_FRAME_BYTES = DEFAULT_MAX_FRAME_BYTES - 64 * 1024;
+
+/**
  * A page of `rows` and as many of `docs`' checkpoints as fit {@link PAGE_DOCS_BUDGET}, in the
- * order given. One left out makes the page incomplete: a joiner below a floor then adopts nothing
- * for it rather than miss the document that did not fit.
+ * order given, then fewer from the end while the encoded page is past {@link PAGE_FRAME_BYTES}
+ * (large rows leave less room). One left out makes the page incomplete: a joiner below a floor
+ * then adopts nothing for it rather than miss the document that did not fit.
  */
 export function fittedPage(rows: readonly KeyedRecord[], docs: PageDocs): Uint8Array {
   let spent = 0;
@@ -54,8 +61,20 @@ export function fittedPage(rows: readonly KeyedRecord[], docs: PageDocs): Uint8A
     spent += size;
     return true;
   });
-  const complete = docs.complete && kept.length === docs.checkpoints.length;
-  return encodeSnapshotPage({ rows, docs: { checkpoints: kept, complete } });
+  const encode = () =>
+    encodeSnapshotPage({
+      rows,
+      docs: {
+        checkpoints: kept,
+        complete: docs.complete && kept.length === docs.checkpoints.length,
+      },
+    });
+  let page = encode();
+  while (page.length > PAGE_FRAME_BYTES && kept.length > 0) {
+    kept.pop();
+    page = encode();
+  }
+  return page;
 }
 
 /**

@@ -1,8 +1,10 @@
 import type { BackgroundError } from "@syncmesh/docs";
 
 import { AdapterMissing, DocPending, HandleInvalidated, UpdateTooLarge } from "@syncmesh/docs";
-import { DocCoverStale, type Cursors } from "@syncmesh/engine";
+import { DocCoverStale, PolicyDenied, type Cursors, type Validator } from "@syncmesh/engine";
 import { eventId, hlcOf, parseAdapterId, parseLineageId, parseSeqNum } from "@syncmesh/kernel";
+import { seed } from "@syncmesh/kernel/test-fixtures";
+import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import {
   createJoinExchange,
@@ -10,7 +12,7 @@ import {
   type JoinExchange,
   type SnapshotDocs,
 } from "@syncmesh/transport";
-import { signCheckpoint } from "@syncmesh/wire";
+import { createIdentity, decodeCheckpoint, signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { LoroDoc } from "loro-crdt";
 
@@ -31,6 +33,7 @@ import {
   type,
   type Node,
   until,
+  validate,
 } from "./fixtures.js";
 
 describe("loro@1 through the engine: open, flush, fold, converge", () => {
@@ -326,6 +329,34 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     const d = node(34);
     await joinThroughPages(a, d, floor);
     expect(d.engine.coverage().synced).toEqual(floor);
+  });
+
+  test("a checkpoint signed by a producer that may not edit the row earns no floor (E30 P5)", async () => {
+    const { a, floor } = await compactedHolder();
+    const reader = createIdentity(seed(98)).unwrap();
+    // the joiner's rules: the reader holds the partition, but its grant edits nothing
+    const readOnly: Validator = {
+      validate: (event, before) =>
+        event.peerId === reader.peerId
+          ? Result.err(
+              new PolicyDenied({ table: "notes", key: "n1", op: "update", message: "a reader" }),
+            )
+          : validate.validate(event, before),
+    };
+    const c = node(35, { validate: readOnly });
+    const honest = a.documents.pages(a.identity).serve;
+    // the holder's own checkpoints, signed again by the reader as if it had made them
+    await joinThroughPages(a, c, floor, async (rows) => {
+      const served = await honest(rows);
+      const checkpoints = served.checkpoints.map((entry) => {
+        const core = decodeCheckpoint(entry.checkpoint, entry.producer).unwrap().checkpoint;
+        return { ...entry, producer: reader.peerId, checkpoint: signCheckpoint(core, reader).wire };
+      });
+      return { ...served, checkpoints };
+    });
+    expect(c.engine.state().get(NOTES)?.size).toBe(1);
+    expect(c.engine.coverage().synced.size).toBe(0);
+    expect((await c.engine.docHeads()).unwrap()).toEqual([]);
   });
 
   test("a checkpoint is refused when forged, tampered, or of a snapshot that does not reproduce its version", async () => {

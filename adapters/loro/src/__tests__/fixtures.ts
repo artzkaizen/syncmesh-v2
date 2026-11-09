@@ -1,5 +1,5 @@
 import type { BackgroundError, DocLimits } from "@syncmesh/docs";
-import type { Link } from "@syncmesh/engine";
+import type { Link, Validator } from "@syncmesh/engine";
 import type { LoroDoc } from "loro-crdt";
 
 import { createDocuments } from "@syncmesh/docs";
@@ -62,6 +62,8 @@ export interface NodeOptions {
   readonly onError?: (error: BackgroundError) => void;
   /** How many of its last writes the engine keeps revertable. */
   readonly undoDepth?: number;
+  /** What the engine folds with; the schema's own rules when absent. */
+  readonly validate?: Validator;
 }
 
 /** An engine of the mesh with the doc column declared, and the document runtime over it. */
@@ -76,7 +78,7 @@ export function node(n: number, options: NodeOptions = {}) {
     clock: createHlcClock({ now }),
     store,
     stateStore: createMemoryStateStore(),
-    validate,
+    validate: options.validate ?? validate,
     docs: DOCS,
     ...(withAdapter && { docAdapters: new Set([LORO_ID]) }),
     ...(options.undoDepth !== undefined && { undoDepth: options.undoDepth }),
