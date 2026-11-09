@@ -68,7 +68,8 @@ the stronger promise gives the instances a shared log — Postgres Streams or th
 and so subscribes to the room's channel, when a device first connects to it. A grant fanned out
 before then never reaches it, and no peer sends it again, so a phone that lands there later holds
 the other phones' events unvouched. `check.ts` connects every phone before any asks for a grant
-for that reason (gaps U41).
+for that reason (gaps U41). Once a room is open, the instance does not seat a socket in it until
+its `LISTEN` is acknowledged, so nothing published after that is missed.
 
 ## What it deliberately leaves out
 
