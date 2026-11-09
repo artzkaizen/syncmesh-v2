@@ -226,6 +226,21 @@ create: mutation.input(…).handler(async ({ input, db, ids, docs }) => {
 `docs.replace(ref, snapshotBytes)` starts a new lineage (§5.3). It is used for "import this
 file" or "reset to this template". It is the only way two unrelated histories ever meet.
 
+**Built (2026-11-09, `feat/doc-column-finish`), where it departs.** syncmesh has no client-side
+`mutation` handler with a `ctx` (procedures are oRPC handlers over the authority mesh), so the
+surface is on the document runtime, reachable as `mesh.docs`: `mesh.docs.mutate(procedure, (tx,
+docs) => …, options)` records row changes on `tx` and `docs.change(address, edit)` /
+`docs.replace(address, snapshot)` on `docs`, and writes them as **one** event; a refused write
+publishes none of it and invalidates the replicas it edited. `mesh.docs.replace(address,
+snapshot)` is the one-change form; its snapshot must be readable by the column's adapter. A
+document edited and replaced in one write is refused (`DocWriteConflict`). `mesh.docs.ref(address)`
+is the stable `DocRef` (open only; `status` and `version` live on the open handle, and query-side
+tables do not yet hand one back in place of the column), and `useDoc(ref)` in `@syncmesh/react`
+is the hook. `mesh.docs.lineages(address)` lists every history with its winner,
+`openLineage(address, lineage)` rebuilds one that lost on a detached replica, and
+`restore(address, lineage)` brings it back as a replace on top of the current winner (§5.3's
+"recover the other version").
+
 ### 4.4 Actions, undo, history (TypeScript)
 
 ```ts
@@ -350,10 +365,17 @@ data = {
   2: lineage   bstr(16)           absent = the root lineage (§5.3)
   3: bytes     bstr               the update, inline            ┐ exactly one
   4: blob      [bstr(32), uint]   sha-256 + length, via D18     ┘
-  5: genesis   1                  only on a replace(): `bytes`/`blob` is the new lineage's snapshot
+  5: genesis   1 | 2              only on a replace(): `bytes`/`blob` is the new lineage's snapshot
   6: parent    bstr(16)           only on a genesis: the lineage it replaces; absent = the root
+  7: settles   [bstr(16), uint, uint, bstr(32)]
+                                  only on a genesis of rule 2: the anchor it settles the lineage
+                                  walk at — a lineage and its genesis's stamp (gap U21, §16.1)
 }
 ```
+
+Key 5 is `2` exactly when key 7 is present (gap U21): a genesis of rule 2 settles the walk, and
+a build that runs rule 1 alone refuses it at decode rather than fold it without trimming what its
+peers trim. Key 7 on any other genesis, or on an edit, is refused at decode.
 
 Key 5's value is the version of the lineage rule the genesis was written under: `1` is the
 first-genesis tree of §5.3 (decided in §16.1). The last-writer-wins rule before it wrote `true`.
@@ -405,9 +427,10 @@ double their content when merged. Syncmesh answers it once:
 - **The lineage cell holds the tree, not the winner.** In the kernel's `RowRecord`, the doc
   column's cell holds every genesis it has seen, keyed by lineage id, tagged with the version of
   the rule that wrote it (the `1` a genesis carries in key 5):
-  `[1, { lineage → [parent | null, hlc ms, hlc logical, peer] }]`. Two cells join by union (a
-  lattice join: commutative, associative, idempotent), and the cell's stamp is the later of the
-  two. The winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never
+  `[1, { lineage → [parent | null, hlc ms, hlc logical, peer] }]`, or, once a genesis has settled
+  the walk (gap U21, §16.1), `[2, { … }, [anchor lineage, ms, logical, peer]]`. Two cells join by
+  union under the later anchor, dropping every genesis that anchor has passed (a lattice join:
+  commutative, associative, idempotent), and the cell's stamp is the later of the two. The winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never
   stored, so every arrival order and batching lands on one lineage. Row digests, snapshot pages
   (RFC-0019), repairs, tombstones and `insert`×`insert` carry the whole set, tag included,
   because they carry the cell. The SQL column still holds snapshot bytes. The projection writes
@@ -440,6 +463,13 @@ double their content when merged. Syncmesh answers it once:
   entry is `bytes-missing` and the doc's status is `"behind"` until the blob lands. The
   threshold is the authoring flush's choice (P3). Until §16.7 settles the number, neither the
   decoder nor the validator refuses an inline update by size.
+  **Built (2026-11-09):** a runtime given a blob store (`createDocuments({ blobs })`; a mesh
+  passes `mesh.blobs` when its storage has one) sends a burst or a `replace()` past the adapter's
+  `maxUpdateBytes` as a blob reference, up to `maxSnapshotBytes`; with none it is refused
+  (`UpdateTooLarge`) as before. An offline author keeps the bytes in its own store, so going
+  offline is not a refusal. A blob-carried update is fetched before it is applied to an open
+  replica (which is `behind` meanwhile), loaded, materialised or checkpointed; one no carrier
+  holds leaves the document `behind`. The relay's retention of those bytes is D18's, unchanged.
 - **Catch-up** uses RFC-0002's hash-chained chunks unchanged. Doc changes are ordinary events,
   so a 10k-update backlog costs one signature check per author and compresses with the rest.
   Receivers import each doc's backlog with one `apply(&[..])` batch.
@@ -969,6 +999,33 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    grows by about 110 bytes per replace and has no cap: no bound is trivial, because dropping a
    genesis every peer has not dropped alike changes the walk, and a compaction of the tree needs
    a floor all peers agree on (gap U21).
+   **Gap U21, decided 2026-11-08 (Jace delegated the call) and built: a settled anchor.** The
+   floor every peer applies alike is carried in the event, not computed per peer. A `replace()`
+   names, beside its parent, the deepest lineage on its author's walk whose genesis is stamped at
+   least `lineageSettleAfter` (default 30 days; Rust `lineage_settle_after_ms`) before it — data
+   key 7, `settles`, with genesis key 5 written as `2`. Folding it moves the cell to
+   `[2, geneses, anchor]`: the walk starts at the anchor, and every genesis stamped at or below
+   the anchor's stamp, the anchor's own included, leaves the cell. Of two anchors the later stamp
+   (then the larger lineage) holds. Dropping is a property of each genesis against the one anchor
+   every peer converges on, so the join stays a lattice join and a trimmed cell and an untrimmed
+   one join to the same value (the permutation tests in `kernel/doc.test` and
+   `syncmesh-core/tests/doc_fold.rs`, and `doc-vectors.json`'s settled trees, in both runtimes).
+   The validator refuses an anchor naming its own genesis or stamped no earlier than its event;
+   its lineage need not be held, as a parent need not. Why it keeps the walk's result: along an
+   honest walk each genesis is stamped after its parent (the author held the parent, and its HLC
+   moved past it), so a genesis that could displace a lineage at or above the anchor is a sibling
+   stamped before the anchor's own child, hence below the anchor — exactly what is dropped. The
+   trimmed walk therefore equals the untrimmed one for every genesis that reached the anchor's
+   author within the settle window. **Where it departs from "a floor every peer has passed":**
+   no build knows what every peer has passed (RFC-0015 §2a forgets a silent peer after
+   `forgetPeersAfter` for the same reason), so the floor is a time a device promises, not a
+   proven one. A device that held a `replace()` unsent for longer than the window finds it off
+   the walk on every peer alike — never applied, its updates kept as `orphaned` and readable
+   (`documents.lineages`, `openLineage`, `restore`). The bound: a cell holds the anchor plus the
+   geneses stamped after it — about one settle window's worth before the latest replace —
+   whatever the document's age
+   (`engine/doc-fold.test`, "a lineage cell stays bounded"). Rust's `Engine` writes anchors under
+   the same rule.
 2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
    to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
    the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and
