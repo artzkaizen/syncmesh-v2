@@ -166,4 +166,42 @@ describe("a snapshot window is part of the interest (O13)", () => {
       window: { newest: 5 },
     });
   });
+
+  test("a window an app built that is not a positive whole number is no window anywhere", () => {
+    for (const newest of [0, -3, 2.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      const odd = acme(newest);
+      // a wrong `true` here would keep a cursor that never saw the rows outside a real window
+      expect(narrows(odd, acme(50))).toBe(false);
+      expect(narrows(acme(50), odd)).toBe(true);
+      expect(interestText(odd)).toBe(interestText(acme()));
+      expect(sameInterest(odd, acme())).toBe(true);
+      expect(entitledInterest(odd, [ACME])).toEqual(acme());
+    }
+  });
+});
+
+describe("text that is not an interest reads as the Rust reads it (O13)", () => {
+  test("JSON that is no object is no interest", () => {
+    for (const text of ["5", "[]", '"ab"', "null", "true"])
+      expect(interestFrom(text)).toBeUndefined();
+  });
+
+  test("partitions that are not a list are no interest; null partitions are all of them", () => {
+    expect(interestFrom('{"partitions":"x"}')).toBeUndefined();
+    expect(interestFrom('{"partitions":null}')).toEqual({});
+  });
+
+  test("a list keeps only its partition keys", () => {
+    expect(interestFrom('{"partitions":["org:acme",5,"not a key",null]}')).toEqual({
+      partitions: [ACME],
+    });
+  });
+
+  test("a scope's entitlement is read even beside an interest that is not one", () => {
+    expect(scopeFrom('{"partitions":"x","entitlement":"clinic:a"}')).toEqual({
+      interest: undefined,
+      entitlement: "clinic:a",
+    });
+    expect(scopeFrom('{"entitlement":5}')).toEqual({ interest: {}, entitlement: undefined });
+  });
 });

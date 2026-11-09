@@ -183,6 +183,7 @@ export {
   sameInterest,
   scopeFrom,
   scopeText,
+  wholeWindow,
 } from "./interest.js";
 export type { AccountLink, Dispute, LinkRow } from "./accounts.js";
 export { disputes, linkDevice, linkKey, linkedAuthor, links, unlinkDevice } from "./accounts.js";

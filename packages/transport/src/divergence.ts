@@ -2,7 +2,7 @@ import type { Ahead, Engine, Interest } from "@syncmesh/engine";
 import type { PeerId, SeqNum, TableName } from "@syncmesh/kernel";
 import type { Identity } from "@syncmesh/wire";
 
-import { sameAhead } from "@syncmesh/engine";
+import { sameAhead, wholeWindow } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 
 import type { Withheld } from "./withheld.js";
@@ -69,7 +69,7 @@ export function divergenceAgainst(
   if (theirs.scope !== scope) return undefined;
   // a window is a different subset of rows on each device that joined under it: the same cursors
   // over different rows is the window, not a divergence
-  if (interest?.window !== undefined) return undefined;
+  if (wholeWindow(interest?.window) !== undefined) return undefined;
   if (!sameCoverage(engine.coverage().synced, theirs.at)) return undefined;
   if (theirs.ahead === undefined || !sameAhead(engine.ahead(), theirs.ahead)) return undefined;
   return disagreements(

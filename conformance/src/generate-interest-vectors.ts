@@ -45,6 +45,18 @@ const spelled: readonly { readonly description: string; readonly interest?: Inte
     interest: { window: { newest: 50 }, partitions: [ACME, GLOBEX] },
   },
   { description: "a window alone", interest: { window: { newest: 5 } } },
+  {
+    description: "a window of none an app built is written as no window",
+    interest: { partitions: [ACME], window: { newest: 0 } },
+  },
+  {
+    description: "a negative window an app built is written as no window",
+    interest: { window: { newest: -3 } },
+  },
+  {
+    description: "a fractional window an app built is written as no window",
+    interest: { window: { newest: 2.5 } },
+  },
 ];
 
 const read: readonly { readonly description: string; readonly text: string }[] = [
@@ -62,6 +74,16 @@ const read: readonly { readonly description: string; readonly text: string }[] =
   {
     description: "a field this build does not know is dropped",
     text: '{"partitions":[],"rank":1}',
+  },
+  { description: "a number is no interest", text: "5" },
+  { description: "a list is no interest", text: "[]" },
+  { description: "a string is no interest", text: '"ab"' },
+  { description: "null is no interest", text: "null" },
+  { description: "partitions that are not a list are no interest", text: '{"partitions":"x"}' },
+  { description: "null partitions are every partition", text: '{"partitions":null}' },
+  {
+    description: "a list keeps only its partition keys",
+    text: '{"partitions":["org:acme",5,"not a key",null,"org:globex"]}',
   },
 ];
 
@@ -112,6 +134,11 @@ const pairs: readonly {
   { description: "windowing an unwindowed slice narrows", next: acme(50), previous: acme() },
   { description: "dropping the window widens", next: acme(), previous: acme(50) },
   { description: "growing the window widens", next: acme(100), previous: acme(50) },
+  {
+    description: "a window of none is no window, so it widens a window",
+    next: { partitions: [ACME], window: { newest: 0 } },
+    previous: acme(50),
+  },
   {
     description: "everything over a window alone widens",
     next: {},

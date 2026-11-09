@@ -1,5 +1,6 @@
-import type { PartitionKey, RowRecord, SyncEvent } from "@syncmesh/kernel";
+import type { JsonObject, JsonValue, PartitionKey, RowRecord, SyncEvent } from "@syncmesh/kernel";
 
+import { isJsonArray, jsonObject, parsePartitionKey } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
@@ -16,6 +17,10 @@ import type { Cursors } from "./sync.js";
  * is a NEVER, and narrowing below the partition was it wearing transport clothes. What stays is
  * **transfer narrowing**: asking for some granted partitions now and others later, which shapes
  * which bytes travel and never what this device holds.
+ *
+ * The one exception is a {@link InterestWindow}, and it is a snapshot's alone: a device that
+ * joined under one holds the newest rows of a partition, and may hold a row outside them in part
+ * (see `window`). It claims no coverage for what it serves, so the subset never spreads as whole.
  */
 export interface Interest {
   /** Only these instances. Absent, every instance the policy already allows. */
@@ -29,6 +34,11 @@ export interface Interest {
    * window in the coverage it hands back, the narrower claim. A coverage adopted under a window
    * claims nothing about the rows outside it, so dropping or growing the window later re-pages
    * them (D23).
+   *
+   * So a device under a window can hold a row **in part**: an update to a row outside its window
+   * arrives like any event and folds onto nothing, leaving a visible row with only the patched
+   * cells until the window widens or is dropped and the re-page brings the rest. Such a device is
+   * not a source of whole rows, so it claims no coverage for any snapshot it serves (D23).
    */
   readonly window?: InterestWindow;
 }
@@ -42,7 +52,11 @@ export interface Interest {
  * const interest = { partitions: [team], window: { newest: 2_000 } } satisfies Interest;
  */
 export interface InterestWindow {
-  /** A positive whole number of live rows. */
+  /**
+   * A positive whole number of live rows, at most `Number.MAX_SAFE_INTEGER`. Any other value is
+   * no window at all — the wider request — in the text, the snapshot and every comparison
+   * ({@link wholeWindow}), and the Rust reads it the same way.
+   */
   readonly newest: number;
 }
 
@@ -50,13 +64,30 @@ export interface InterestWindow {
 export const EVERYTHING: Interest = {};
 
 /**
- * An interest's fields in their one order — `partitions`, then `window` — so a TypeScript and a
- * Rust device write the same text for the same request, whatever order the app spelled it in.
+ * The window a request may carry: `newest` a positive whole number this build counts exactly.
+ * Anything else — `0`, a negative, a fraction, `NaN`, past 2^53 − 1 — is no window, the wider
+ * request, whether the app built it or the wire carried it.
  */
-const canonical = (interest: Interest): Interest => ({
-  ...(interest.partitions !== undefined && { partitions: interest.partitions }),
-  ...(interest.window !== undefined && { window: { newest: interest.window.newest } }),
-});
+export const wholeWindow = (window: { readonly newest?: unknown } | undefined) => {
+  const newest = window?.newest;
+  // SAFETY: `isSafeInteger` has just said it is a number, and a whole one
+  return Number.isSafeInteger(newest) && (newest as number) > 0
+    ? ({ newest: newest as number } satisfies InterestWindow)
+    : undefined;
+};
+
+/**
+ * An interest's fields in their one order — `partitions`, then `window` — so a TypeScript and a
+ * Rust device write the same text for the same request, whatever order the app spelled it in. A
+ * window that is not {@link wholeWindow} is left out.
+ */
+const canonical = (interest: Interest): Interest => {
+  const window = wholeWindow(interest.window);
+  return {
+    ...(interest.partitions !== undefined && { partitions: interest.partitions }),
+    ...(window !== undefined && { window }),
+  };
+};
 
 /**
  * An interest as wire text. It is already JSON — a list and a window — so it travels as JSON
@@ -70,37 +101,54 @@ const canonical = (interest: Interest): Interest => ({
 export const interestText = (interest: Interest | undefined): string =>
   interest === undefined ? "" : JSON.stringify(canonical(interest));
 
-/** What the wire may have put where a window goes: anything, until `newest` is read. */
-interface WireInterest extends Omit<Interest, "window"> {
-  readonly window?: { readonly newest?: unknown };
-}
+/** Some text as a JSON object, or `undefined` for empty text, junk, or JSON that is no object. */
+const objectIn = (text: string | undefined): JsonObject | undefined => {
+  if (text === undefined || text === "") return undefined;
+  return Result.try({
+    // SAFETY: `JSON.parse` yields JSON; `jsonObject` keeps it only when it is an object
+    try: () => jsonObject(JSON.parse(text) as JsonValue),
+    catch: () => undefined,
+  }).unwrapOr(undefined);
+};
+
+/* oxlint-disable anti-slop/no-runtime-typeof -- a partition list off the wire is an I/O boundary: its runtime shape is the fact being checked */
+/** The partition keys a wire list holds; an element that is not one is dropped, as the Rust drops it. */
+const partitionsIn = (list: readonly JsonValue[]): PartitionKey[] =>
+  list.flatMap((item) =>
+    typeof item === "string"
+      ? parsePartitionKey(item)
+          .map((key) => [key])
+          .unwrapOr([])
+      : [],
+  );
+/* oxlint-enable anti-slop/no-runtime-typeof */
 
 /**
- * The interest a parsed text holds, its window kept only when `newest` is a positive whole number
- * this build can count exactly; any other window is dropped, the wider request.
+ * The interest a parsed object holds, read exactly as the Rust's `interest_from` reads it:
+ * `partitions` absent or `null` is every partition, a list keeps its partition keys, and anything
+ * else is a request this build cannot read, so `undefined`. A window that is not
+ * {@link wholeWindow} is dropped, the wider request.
  */
-const readInterest = ({ window, ...rest }: WireInterest): Interest => {
-  const newest = window?.newest;
-  // SAFETY: `isSafeInteger` has just said it is a number, and a whole one
-  return Number.isSafeInteger(newest) && (newest as number) > 0
-    ? { ...rest, window: { newest: newest as number } }
-    : rest;
+const readInterest = (object: JsonObject): Interest | undefined => {
+  const listed = object["partitions"];
+  if (listed !== undefined && listed !== null && !isJsonArray(listed)) return undefined;
+  const window = wholeWindow(jsonObject(object["window"]));
+  return {
+    ...(isJsonArray(listed) && { partitions: partitionsIn(listed) }),
+    ...(window !== undefined && { window }),
+  };
 };
 
 /**
  * The interest some text carried, or `undefined` for text that named none. Junk is `undefined`
  * too, deliberately: an unreadable request must fall back to "everything the policy allows",
- * never to "nothing", which would silently starve a device rather than showing a bug. A window
- * this build cannot read is dropped for the same reason: no window is the wider request.
+ * never to "nothing", which would silently starve a device rather than showing a bug. JSON that
+ * is not an object, and a `partitions` that is not a list, are junk; a window this build cannot
+ * read is dropped for the same reason: no window is the wider request.
  */
 export const interestFrom = (text: string | undefined): Interest | undefined => {
-  if (text === undefined || text === "") return undefined;
-  return Result.try({
-    // SAFETY: parsed at the wire boundary and read only through Interest's own optional fields,
-    // the window through `readInterest`; `null` throws on the destructure and reads as junk
-    try: () => readInterest(JSON.parse(text) as WireInterest),
-    catch: () => undefined,
-  }).unwrapOr(undefined);
+  const object = objectIn(text);
+  return object === undefined ? undefined : readInterest(object);
 };
 
 /** No grant is consulted here: an interest asks about rows, never about who the caller is. */
@@ -146,7 +194,7 @@ export function rowsIn(record: RowRecord, interest: Interest | undefined): boole
 export function interestKey(interest: Interest): string {
   const sorted = (values: readonly string[] | undefined) =>
     values === undefined ? null : [...values].map(String).sort();
-  const window = interest.window?.newest;
+  const window = wholeWindow(interest.window)?.newest;
   // a windowless key keeps its old text, so two builds that never window still agree on it
   return JSON.stringify(
     window === undefined ? [sorted(interest.partitions)] : [sorted(interest.partitions), window],
@@ -171,16 +219,21 @@ export function narrows(next: Interest | undefined, previous: Interest | undefin
 }
 
 const isEverything = (interest: Interest): boolean =>
-  interest.partitions === undefined && interest.window === undefined;
+  interest.partitions === undefined && wholeWindow(interest.window) === undefined;
 
-/** No window is every row, so it is the widest a window can be; a smaller count narrows. */
+/**
+ * No window is every row, so it is the widest a window can be; a smaller count narrows. A window
+ * that is not {@link wholeWindow} is no window.
+ */
 const windowWithin = (
   next: InterestWindow | undefined,
   previous: InterestWindow | undefined,
 ): boolean => {
-  if (previous === undefined) return true;
-  if (next === undefined) return false;
-  return next.newest <= previous.newest;
+  const asked = wholeWindow(next);
+  const held = wholeWindow(previous);
+  if (held === undefined) return true;
+  if (asked === undefined) return false;
+  return asked.newest <= held.newest;
 };
 
 /** `undefined` means "all of them", so it is the widest value a list can take, never the emptiest. */
@@ -234,15 +287,20 @@ export interface Scope {
 /**
  * A scope's two halves back. An interest-only text — every scope written before D24 — reads as
  * `{ interest, entitlement: undefined }`, so a cursor scoped under the old rule keeps its meaning.
+ * The entitlement is read whether or not the interest beside it is readable, as the Rust reads it.
  */
 export const scopeFrom = (text: string | undefined): Scope => {
-  // SAFETY: `scopeText` is the one writer of this key, and it writes a string or nothing; the
-  // interest half is read exactly as `interestFrom` reads it
-  const parsed = interestFrom(text) as (Interest & { readonly entitlement?: string }) | undefined;
-  if (parsed === undefined) return { interest: undefined, entitlement: undefined };
-  const { entitlement, ...interest } = parsed;
+  const object = objectIn(text);
+  if (object === undefined) return { interest: undefined, entitlement: undefined };
+  const interest = readInterest(object);
+  const named = object["entitlement"];
+  /* oxlint-disable-next-line anti-slop/no-runtime-typeof -- a scope off the store is an I/O boundary: whether the entitlement is text is the fact being checked */
+  const entitlement = typeof named === "string" ? named : undefined;
   // `{}` beside an entitlement is the relay writing back "no interest", not an interest of `{}`
-  const asked = entitlement !== undefined && isEverything(interest) ? undefined : interest;
+  const asked =
+    entitlement !== undefined && interest !== undefined && isEverything(interest)
+      ? undefined
+      : interest;
   return { interest: asked, entitlement };
 };
 
@@ -290,7 +348,7 @@ export function entitledInterest(
   const kept = asked === undefined ? [...granted] : asked.filter((p) => granted.includes(p));
   const partitions = [...new Set(kept)].sort();
   // the cut is to partitions; a window asked for stays asked for, or the scope would claim more
-  const window = interest?.window;
+  const window = wholeWindow(interest?.window);
   return window === undefined ? { partitions } : { partitions, window };
 }
 

@@ -13,16 +13,34 @@ pub struct Interest {
     pub partitions: Option<Vec<PartitionKey>>,
     /// Only the newest rows of the slice, for a snapshot; `None` is every row. Events are never
     /// windowed, and a coverage adopted under a window claims nothing about the rows outside it,
-    /// so dropping or growing the window re-pages them (D23).
+    /// so dropping or growing the window re-pages them (D23). An update to a row outside the
+    /// window folds onto nothing and leaves that row held in part, so a device under a window
+    /// claims no coverage for what it serves (`held_scope`).
     pub window: Option<InterestWindow>,
 }
 
 /// How many rows a windowed snapshot carries (`InterestWindow`): the `newest` live rows of its
-/// slice by each row's newest stamp, plus every tombstone in the slice.
+/// slice by each row's newest stamp, plus every tombstone in the slice. Built only through
+/// [`InterestWindow::new`], so `newest` is always a positive whole number JavaScript counts
+/// exactly (`wholeWindow`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterestWindow {
-    /// A positive whole number of live rows.
-    pub newest: u64,
+    newest: u64,
+}
+
+impl InterestWindow {
+    /// A window of the `newest` live rows, or `None` for `0` or a count past 2^53 − 1: no window,
+    /// the wider request, exactly as either runtime reads such a window off the wire.
+    pub fn new(newest: u64) -> Option<InterestWindow> {
+        (1..=MAX_SAFE_INTEGER_U64)
+            .contains(&newest)
+            .then_some(InterestWindow { newest })
+    }
+
+    /// How many live rows the window keeps.
+    pub fn newest(self) -> u64 {
+        self.newest
+    }
 }
 
 impl Interest {
@@ -39,11 +57,12 @@ impl Interest {
         }
     }
 
-    /// The same interest, its snapshots windowed to the `newest` live rows.
+    /// The same interest, its snapshots windowed to the `newest` live rows; a count
+    /// [`InterestWindow::new`] refuses leaves it with no window, the wider request.
     #[must_use]
     pub fn windowed(self, newest: u64) -> Interest {
         Interest {
-            window: Some(InterestWindow { newest }),
+            window: InterestWindow::new(newest),
             ..self
         }
     }
@@ -93,15 +112,14 @@ pub fn scope_text(interest: Option<&Interest>, entitlement: Option<&str>) -> Str
 
 /// The largest whole number a JSON reader in JavaScript holds exactly (`Number.MAX_SAFE_INTEGER`).
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+const MAX_SAFE_INTEGER_U64: u64 = 9_007_199_254_740_991;
 
-/// A window as the wire carried it, or `None` for one this build cannot read (`parseWindow`).
+/// A window as the wire carried it, or `None` for one this build cannot read (`wholeWindow`).
 fn parse_window(value: &serde_json::Value) -> Option<InterestWindow> {
     let newest = value.as_object()?.get("newest")?.as_f64()?;
     let whole = newest.fract() == 0.0 && newest > 0.0 && newest <= MAX_SAFE_INTEGER;
     // a positive whole number at most 2^53 - 1 fits a u64 exactly
-    whole.then_some(InterestWindow {
-        newest: newest as u64,
-    })
+    whole.then(|| InterestWindow::new(newest as u64)).flatten()
 }
 
 /// The interest some text carried, or `None` for text that named none. Junk is `None` too,
@@ -361,6 +379,20 @@ mod tests {
         assert!(same_interest(Some(&ab), Some(&ba)));
         assert!(same_interest(None, Some(&Interest::EVERYTHING)));
         assert!(!same_interest(Some(&ab), None));
+    }
+
+    #[test]
+    fn a_window_of_no_whole_rows_is_no_window() {
+        let acme = Interest::partitions([key("org:acme")]);
+        for newest in [0, 9_007_199_254_740_992] {
+            let odd = acme.clone().windowed(newest);
+            assert_eq!(odd.window, None, "{newest}");
+            assert_eq!(interest_text(Some(&odd)), r#"{"partitions":["org:acme"]}"#);
+        }
+        assert_eq!(
+            InterestWindow::new(9_007_199_254_740_991).map(InterestWindow::newest),
+            Some(9_007_199_254_740_991)
+        );
     }
 
     #[test]

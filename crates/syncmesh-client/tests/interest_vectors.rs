@@ -143,10 +143,11 @@ fn a_window_keeps_the_rows_the_typescript_keeps() {
     assert_eq!(cases.len(), 8);
     for v in cases {
         let newest = v["newest"].as_u64().expect("newest");
-        let kept: Vec<(String, String)> = window_rows(rows.clone(), InterestWindow { newest })
-            .into_iter()
-            .map(|r| (r.table, r.key))
-            .collect();
+        let kept: Vec<(String, String)> =
+            window_rows(rows.clone(), InterestWindow::new(newest).unwrap())
+                .into_iter()
+                .map(|r| (r.table, r.key))
+                .collect();
         let want: Vec<(String, String)> = v["kept"]
             .as_array()
             .expect("kept")

@@ -24,7 +24,7 @@ import type { FoldBatch } from "./engine.js";
 import type { Interest, InterestWindow } from "./interest.js";
 import type { Coverage } from "./sync.js";
 
-import { interestText, rowsIn } from "./interest.js";
+import { interestText, rowsIn, wholeWindow } from "./interest.js";
 import { lineageMoves } from "./lineage-moves.js";
 
 /**
@@ -78,7 +78,8 @@ export function stateSnapshot(
   const { interest } = options;
   // tombstones travel: without them a joiner would resurrect every row anyone deleted
   const sliced = [...keyedRecords(state)].filter(({ record }) => rowsIn(record, interest));
-  const rows = interest?.window === undefined ? sliced : windowRows(sliced, interest.window);
+  const window = wholeWindow(interest?.window);
+  const rows = window === undefined ? sliced : windowRows(sliced, window);
   // the floor and the held run are this device's own account of its log, never part of what it
   // claims to a joiner
   const { floor: _ownFloor, held: _ownHeld, ...claimed } = coverage;

@@ -92,6 +92,13 @@ describe("snapshot", () => {
     expect(b.engine.coverage().scope).toBe(interestText(window));
     expect(readRow(b.engine.state(), NOTES, key("n3"))).toBeUndefined();
   });
+
+  test("a window of no whole rows is no window: the whole slice travels (O13)", async () => {
+    const a = setup(PEER_A, 100);
+    for (const id of ["n1", "n2"]) (await write(a, id, id)).unwrap();
+    for (const newest of [0, -1, 1.5])
+      expect(a.engine.snapshot({ interest: { window: { newest } } }).rows).toHaveLength(2);
+  });
 });
 
 describe("installSnapshot", () => {
