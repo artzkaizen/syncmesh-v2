@@ -16,7 +16,12 @@ import { admitted, phone, until } from "../phone.js";
  * requests included, so a fleet whose fan-out is broken fails at the first wait.
  */
 
-const RELAY_URL = Bun.env.RELAY_URL ?? `ws://localhost:5198/${ROOM}`;
+/**
+ * The fleet's address — the load balancer — or several instances' addresses, comma-separated,
+ * which the server peer and the phones take in turn: the same spread without nginx.
+ */
+const URLS = (Bun.env.RELAY_URL ?? `ws://localhost:5198/${ROOM}`).split(",");
+const dialing = (n: number): string => URLS[n % URLS.length] ?? `ws://localhost:5198/${ROOM}`;
 const WAIT = 30_000;
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-fleet-check-"));
 
@@ -25,17 +30,25 @@ const check = (held: boolean, what: string): void => {
   if (!held) process.exitCode = 1;
 };
 
-const backend = await openBackend({ dataDir: dir, relayUrl: RELAY_URL });
+const backend = await openBackend({ dataDir: dir, relayUrl: dialing(0) });
 const phones = [];
 try {
-  for (const name of ["alice", "bob", "carol"]) {
-    const mesh = await phone(name, RELAY_URL, backend.issuer, dir);
-    phones.push(mesh);
-    check(await admitted(mesh, WAIT), `${name} is granted by the server peer through the fleet`);
-  }
+  // every phone on before any asks: an instance opens a room at its first socket, and a grant
+  // fanned out before that is a frame it never hears and nobody sends again (README, "What this
+  // shape still cannot promise")
+  const names = ["alice", "bob", "carol"];
+  for (const [n, name] of names.entries())
+    phones.push(await phone(name, dialing(n + 1), backend.issuer, dir));
+  for (const [n, mesh] of phones.entries())
+    check(
+      await admitted(mesh, WAIT),
+      `${names[n]} is granted by the server peer through the fleet`,
+    );
   const [alice, bob, carol] = phones;
   if (alice === undefined || bob === undefined || carol === undefined)
     throw new Error("three phones were opened");
+  // a phone with no grant cannot write: there is nothing further to check
+  if (process.exitCode === 1) throw new Error("the fleet granted nobody; its logs say why");
 
   await alice
     .on(INSTANCE)

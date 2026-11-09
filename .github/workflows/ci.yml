@@ -77,7 +77,7 @@ jobs:
         run: |
           # any answer but nginx's own "no upstream" means a relay is behind it
           for _ in $(seq 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5198/acme || true)
+            code=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' http://localhost:5198/acme || true)
             case "$code" in 000|502|503|504) sleep 1 ;; *) echo "relay answered $code"; exit 0 ;; esac
           done
           exit 1
