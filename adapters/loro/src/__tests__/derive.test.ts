@@ -94,10 +94,19 @@ interface NodeOptions {
 }
 
 /** A state store whose column writes fail: the process dying between a commit and its columns. */
-const powerCut = (state: StateStore): StateStore => ({
-  ...state,
-  writeDocColumns: () => Promise.resolve(Result.err(new StoreFailure({ message: "power cut" }))),
-});
+const cutColumns = () => Promise.resolve(Result.err(new StoreFailure({ message: "power cut" })));
+const powerCut = (state: StateStore): StateStore => ({ ...state, writeDocColumns: cutColumns });
+
+/** A power cut that only falls once `armed.on` is set, so the writes before it land. */
+const armedCut =
+  (armed: { on: boolean }) =>
+  (state: StateStore): StateStore => {
+    const write = state.writeDocColumns;
+    return {
+      ...state,
+      writeDocColumns: (writes) => (armed.on || write === undefined ? cutColumns() : write(writes)),
+    };
+  };
 
 /** One sealed workspace's content key, at the first epoch, as a key ring that holds it answers. */
 const keysFor = (key: Uint8Array): SealingKeys => ({
@@ -759,15 +768,23 @@ describe("the document column holds the snapshot (RFC-0023 §6.1)", () => {
     a.documents.stop();
     return { a, held };
   };
-  /** Boots `a`'s stores again, with `atomic` or without it, through `state` where one is given. */
-  const boot = (a: StoredNode, atomic: boolean, state?: (s: StateStore) => StateStore) => {
+  /**
+   * Boots `a`'s stores again, with `atomic` or without it, through `state` where one is given, and
+   * with its doc store unless `docStore` is `false`.
+   */
+  const boot = (
+    a: StoredNode,
+    atomic: boolean,
+    state?: (s: StateStore) => StateStore,
+    docStore = true,
+  ) => {
     const scope = state ?? ((s: StateStore) => s);
     return openEngine({
       peerId: a.identity.peerId,
       clock: createHlcClock({ now: a.now }),
       store: a.stores.events,
       stateStore: scope(a.stores.state),
-      docStore: a.stores.docs,
+      ...(docStore && { docStore: a.stores.docs }),
       ...(atomic && {
         atomic: <T>(fn: (scoped: AtomicStores) => Promise<T>) =>
           a.stores.atomic((scoped) => fn({ ...scoped, state: scope(scoped.state) })),
@@ -806,6 +823,38 @@ describe("the document column holds the snapshot (RFC-0023 §6.1)", () => {
     expect(repaired.isErr()).toBe(true);
     // the rows and the columns they reseat are one transaction: neither landed
     expect(await b.row()).toBeUndefined();
+  });
+
+  test("a snapshot install whose columns fail commits none of its rows either", async () => {
+    const { a } = await materialised(73, "Installed");
+    const armed = { on: false };
+    const b = await storedNode(74, { state: armedCut(armed) });
+    // b holds the document before the row, so the install's rows reseat its column
+    const made = (
+      await a.documents.checkpoint(DOC, a.identity, hlcOf(a.now().epochMilliseconds, 0))
+    ).unwrap();
+    const [, edit] = (await a.engine.eventsSince(new Map())).unwrap();
+    if (edit === undefined) throw new Error("the edit was written");
+    (await b.engine.receive(edit)).unwrap();
+    (await b.documents.install(made.signed.wire, a.identity.peerId, made.snapshot, DOC)).unwrap();
+    armed.on = true;
+    const installed = await Result.tryPromise(() => b.engine.installSnapshot(a.engine.snapshot()));
+    expect(installed.isErr()).toBe(true);
+    // the rows and the columns they reseat are one transaction: neither landed
+    expect(await b.row()).toBeUndefined();
+  });
+
+  test("an engine given no doc store restores no column at boot, with atomic or without", async () => {
+    // the running engine keeps its documents in memory then, and never reads the transaction's
+    for (const [n, atomic] of [
+      [75, true],
+      [76, false],
+    ] as const) {
+      const { a } = await materialised(n, "Unheld");
+      (await a.stores.state.clear()).unwrap();
+      (await boot(a, atomic, undefined, false)).unwrap();
+      expect(await column(a)).toBeNull();
+    }
   });
 
   test("without atomic, a boot writes every document column afresh, finishing one a crash cut short", async () => {
