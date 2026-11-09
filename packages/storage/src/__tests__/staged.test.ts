@@ -63,6 +63,7 @@ const authority = async (driver: SqlDriver) => {
       store: stores.events,
       stateStore: stores.state,
       atomic: stores.atomic,
+      merge: schema.merge,
     })
   ).unwrap();
   const sent: SyncEvent[] = [];
@@ -141,7 +142,7 @@ describe("a staged table, written by the mesh and by something outside it", () =
       orgId: "acme",
       title: "from the mesh",
       status: "done",
-      views: null,
+      views: { n: {}, p: {} },
     });
     const swept = sent.filter((event) => event.partition === ACME).slice(1);
     expect(swept).toHaveLength(1);
@@ -198,7 +199,35 @@ describe("a staged table, written by the mesh and by something outside it", () =
       orgId: "acme",
       title: "mesh title",
       status: "b",
-      views: null,
+      views: { n: {}, p: {} },
+    });
+  });
+
+  test("an outside write that sets a column back over a mesh write still reaches the mesh", async () => {
+    const driver = await openPair(":memory:", schemaName(tables));
+    const { stores, engine, sent, source, write } = await authority(driver);
+    const captured = async (name: string, sql: string) =>
+      (await write(name, () => stores.driver.run(sql), { partition: ACME })).unwrap();
+    await captured(
+      "tasks.create",
+      `INSERT INTO tasks (id, orgId, title, status) VALUES ('t1', 'acme', 'first', 'a')`,
+    );
+    await stores.driver.run(`UPDATE tasks SET status = 'b' WHERE id = 't1'`);
+    await captured("tasks.update", `UPDATE tasks SET status = 'c' WHERE id = 't1'`);
+    await stores.driver.run(`UPDATE tasks SET status = 'a' WHERE id = 't1'`);
+    const meshed = sent.length;
+
+    const running = (await startCapture({ engine, source, mappings })).unwrap();
+    await eventually(async () => (await source.pending()).unwrap() === 0, "the queue drained");
+    await eventually(() => sent.length > meshed, "the outside writes");
+    running.stop();
+    (await running.done).unwrap();
+
+    expect(patchesAfter(sent, meshed)).toEqual([{ status: "a" }]);
+    const [stored] = await stores.driver.all(`SELECT status FROM tasks WHERE id = 't1'`);
+    expect({ table: stored?.[0], mesh: row(engine, "t1")?.["status"] }).toEqual({
+      table: "a",
+      mesh: "a",
     });
   });
 
@@ -229,6 +258,8 @@ describe("a staged table, written by the mesh and by something outside it", () =
     (await running.done).unwrap();
 
     expect(patchesAfter(sent, meshed)).toEqual([{ views: { "+": 3 } }]);
+    const [stored] = await stores.driver.all(`SELECT views FROM tasks WHERE id = 't1'`);
+    expect(Number(stored?.[0])).toBe(3);
   });
 
   test("an outside update to a row the mesh has not placed yet still lands in the row's instance", async () => {

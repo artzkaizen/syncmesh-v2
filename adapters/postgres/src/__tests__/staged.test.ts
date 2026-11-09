@@ -110,6 +110,7 @@ describe.if(url !== "")(
           store: stores.events,
           stateStore: stores.state,
           atomic: stores.atomic,
+          merge: schema.merge,
         })
       ).unwrap();
       const sent: SyncEvent[] = [];
