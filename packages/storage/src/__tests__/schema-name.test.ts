@@ -49,6 +49,28 @@ describe("the state file is named after the app's schema", () => {
     await reopened.close();
   });
 
+  test("a state file deleted on its own is installed again over the same shape (gaps U39)", async () => {
+    const log = join(dir, "deleted.db");
+    const name = schemaName(ONE_COLUMN);
+    const first = await openPair(log, name);
+    const opened = (await openStores(first, { tables: ONE_COLUMN })).unwrap();
+    (await opened.events.append(entry(A, 1, 100))).unwrap();
+    await opened.close();
+    // the derived half is disposable: an operator may delete it, and the log refolds into a new one
+    for (const suffix of ["", "-wal", "-shm"])
+      rmSync(`${statePath(log, name)}${suffix}`, { force: true });
+
+    const second = await openPair(log, name);
+    const reopened = (await openStores(second, { tables: ONE_COLUMN })).unwrap();
+    expect((await reopened.events.all()).unwrap()).toHaveLength(1);
+    // the log still records the shape as installed; the new file must hold it all the same
+    const tables = await second.all(
+      `SELECT name FROM main.sqlite_master WHERE type = 'table' AND name IN ('notes', 'syncmesh_capture') ORDER BY name`,
+    );
+    expect(tables.map((row) => row[0])).toEqual(["notes", "syncmesh_capture"]);
+    await reopened.close();
+  });
+
   test("a compacted log refuses the new shape rather than opening an empty database", async () => {
     const log = join(dir, "compacted.db");
     const first = await openPair(log, schemaName(ONE_COLUMN));

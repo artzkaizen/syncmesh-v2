@@ -271,6 +271,8 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
       write: `INSERT OR REPLACE INTO ${t("meta")} (key, value) VALUES ('schema', ?)`,
       readGuard: `SELECT value FROM ${t("meta")} WHERE key = 'guard'`,
       writeGuard: `INSERT OR REPLACE INTO ${t("meta")} (key, value) VALUES ('guard', ?)`,
+      // the guard row is part of every capture install, and lives in `main` beside the app's tables
+      installed: `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${GUARD}'`,
     },
     migrate: async (driver) => {
       await ladder(driver, rungs.log, logSteps);
