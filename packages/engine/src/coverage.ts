@@ -237,3 +237,13 @@ export const higherFloor = (a: Cursors, b: Cursors): Cursors => {
   for (const [author, seq] of b) if (seq > (out.get(author) ?? 0)) out.set(author, seq);
   return out;
 };
+
+/**
+ * Per author, in the floor's order, the entries of `floor` that `ours` is below: what a device
+ * still lacks of a floor, whichever side named it.
+ *
+ * @example
+ * belowFloor(new Map([[a, 1], [b, 7]]), new Map([[a, 5], [b, 6]])) // Map { a => 5 }
+ */
+export const belowFloor = (ours: Cursors, floor: Cursors): Cursors =>
+  new Map([...floor].filter(([author, seq]) => (ours.get(author) ?? 0) < seq));

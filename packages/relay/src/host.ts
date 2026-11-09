@@ -1,11 +1,11 @@
 import type { EventStore } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { BlobHomes, BlobLedger, BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
+import type { BlobHomes, BlobLedger, BlobStore, Stores } from "@syncmesh/storage";
 import type { Identity } from "@syncmesh/wire";
 
 import { omitUndefined, panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
-import { bytesToHex, createIdentity, hexToBytes, randomBytes } from "@syncmesh/wire";
+import { createIdentity, randomBytes } from "@syncmesh/wire";
 
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayPosture } from "./posture.js";
@@ -16,6 +16,7 @@ import type { RelaySocket } from "./sender.js";
 import { openDurableBlobs } from "./durable-blobs.js";
 import { DEFAULT_LIMITS } from "./limits.js";
 import { createRoomAccess } from "./posture.js";
+import { relayEpoch } from "./relay-meta.js";
 import { assertTruthfulCustody, hostedCustody } from "./room-receipts.js";
 import { openRelayRoom } from "./room.js";
 import { createRoomTable } from "./rooms.js";
@@ -163,38 +164,6 @@ export const createGate = (
   return (request: Request, room: string): Promise<Response | undefined> =>
     atCapacity(room) ? Promise.resolve(capacityRefusal()) : posture(request, room);
 };
-
-/** The relay's own facts beside the log: its lineage, and the key it signs with. */
-const META_DDL = `CREATE TABLE IF NOT EXISTS "_relay_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`;
-
-/** One `_relay_meta` value, or the one `mint` makes and writes when the key was never set. */
-const readMeta = async (driver: SqlDriver, key: string, mint: () => string): Promise<string> => {
-  await driver.run(META_DDL);
-  const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = ?`, [key]);
-  const value = held[0]?.[0];
-  if (value !== undefined && value !== null) return String(value); // the column is TEXT NOT NULL
-  const fresh = mint();
-  await driver.run(`INSERT INTO "_relay_meta" ("key", "value") VALUES (?, ?)`, [key, fresh]);
-  return fresh;
-};
-
-/** The epoch rides in the log's own file: a new file is honestly a new lineage. */
-export const relayEpoch = (driver: SqlDriver): Promise<string> =>
-  readMeta(driver, "epoch", () => crypto.randomUUID());
-
-/**
- * The key a room signs its link hello with (D36), kept beside the epoch so the room has one name
- * across restarts, evictions and moves — the name a client pins. Minted on the first open.
- */
-export async function relayIdentity(driver: SqlDriver): Promise<Identity> {
-  const seed = await readMeta(driver, "identity-seed", () => bytesToHex(randomBytes(32)));
-  return hexToBytes(seed)
-    .andThen((bytes) => createIdentity(bytes))
-    .match({
-      ok: (value) => value,
-      err: (failure) => panic(`the relay's stored key could not be read: ${failure.message}`),
-    });
-}
 
 /**
  * A room's log over stores somebody opened on a SQLite file: the epoch persisted beside it, and

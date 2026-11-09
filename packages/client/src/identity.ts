@@ -1,13 +1,21 @@
 import type { Result as ResultType } from "@syncmesh/result";
 import type { SqlDriver } from "@syncmesh/storage";
 import type { Identity } from "@syncmesh/wire";
+import type { SeedVault } from "@syncmesh/wire";
 
 import { Result, TaggedError } from "@syncmesh/result";
-import { bytesEqual, bytesToHex, createIdentity, hexToBytes, randomBytes } from "@syncmesh/wire";
-
-import type { SeedVault } from "./vault.js";
-
-import { PLAINTEXT_VAULT, platformVault } from "./vault.js";
+import { overwritePlaintext } from "@syncmesh/storage";
+import {
+  PLAINTEXT_VAULT,
+  VAULT_KIND,
+  bytesToHex,
+  createIdentity,
+  parseSealedText,
+  platformVault,
+  randomBytes,
+  sealChecked,
+  sealedText,
+} from "@syncmesh/wire";
 
 /**
  * This install's signing key: read from its own database, or minted into it on the first boot.
@@ -86,52 +94,13 @@ export interface DeviceIdentityOptions {
   readonly onNotice?: (message: string) => void;
 }
 
-/** What the `"seed"` row holds when a vault sealed it: `sealed:<kind>:<hex>`. Bare hex is plaintext. */
-const SEALED = "sealed:";
-
-/** A {@link SeedVault.kind}: what `sealed:<kind>:` can carry and {@link parseSeedRow} split back. */
-const VAULT_KIND = /^[A-Za-z0-9-]+$/;
-
-const sealedRow = (vault: SeedVault, sealed: Uint8Array) =>
-  vault.kind === PLAINTEXT_VAULT
-    ? bytesToHex(sealed)
-    : `${SEALED}${vault.kind}:${bytesToHex(sealed)}`;
-
-/** The stored row as the vault kind that wrote it and its bytes. */
-function parseSeedRow(row: string) {
-  if (!row.startsWith(SEALED))
-    return hexToBytes(row).map((bytes) => ({ kind: PLAINTEXT_VAULT, bytes }));
-  const rest = row.slice(SEALED.length);
-  const split = rest.indexOf(":");
-  const kind = rest.slice(0, Math.max(split, 0));
-  return hexToBytes(split < 0 ? "" : rest.slice(split + 1)).map((bytes) => ({ kind, bytes }));
-}
-
-const SECURE_DELETE = "PRAGMA secure_delete";
-
-/**
- * Overwrites a plaintext seed with its sealed form, with SQLite's `secure_delete` on for the one
- * statement so the old bytes are zeroed in the page rather than left in free space, and then
- * checkpoints the WAL so no frame still holds them. Answers what it could not make sure of.
- */
-async function replacePlaintext(driver: SqlDriver, row: string): Promise<string | undefined> {
-  const before = await Result.tryPromise({
-    try: async () => (await driver.all(SECURE_DELETE))[0]?.[0],
-    catch: (cause) => cause,
-  });
-  if (before.isOk()) await driver.run(`${SECURE_DELETE} = ON`);
-  await driver.run(UPDATE, [row, "seed"]);
-  if (before.isOk()) await driver.run(`${SECURE_DELETE} = ${Number(before.value ?? 0)}`);
-  const checkpoint = await Result.tryPromise({
-    try: () => driver.all("PRAGMA wal_checkpoint(TRUNCATE)"),
-    catch: (cause) => cause,
-  });
-  if (before.isErr())
-    return "this database refuses PRAGMA secure_delete, so the plaintext seed's old bytes may stay in its free pages until they are reused";
-  if (checkpoint.isErr() || Number(checkpoint.value[0]?.[0] ?? 0) !== 0)
-    return "the WAL could not be checkpointed, so a frame of it may hold the plaintext seed until the next checkpoint";
-  return undefined;
-}
+/** Seals, then opens what it sealed: a vault that cannot read back fails the boot that minted. */
+const sealSeed = (vault: SeedVault, seed: Uint8Array) =>
+  sealChecked(vault, seed).then((sealed) =>
+    sealed.mapError(
+      unavailable(`the ${vault.kind} vault could not seal this install's device key`),
+    ),
+  );
 
 /**
  * The seed behind this install's `"seed"` row, minted and sealed on the first boot, and moved out
@@ -155,24 +124,25 @@ async function rememberedSeed(
     );
     if (held === undefined) {
       const fresh = randomBytes(SEED_LENGTH);
-      const sealed = yield* Result.await(sealChecked(vault, fresh));
+      const sealed = yield* Result.await(sealSeed(vault, fresh));
       yield* Result.await(
         Result.tryPromise({
-          try: () => driver.run(WRITE, ["seed", sealedRow(vault, sealed)]),
+          try: () => driver.run(WRITE, ["seed", sealedText(vault, sealed)]),
           catch: unavailable("this install's device key could not be written to its own database"),
         }),
       );
       return Result.ok(fresh);
     }
-    const stored = yield* parseSeedRow(held).mapError(
+    const stored = yield* parseSealedText(held).mapError(
       unavailable("this install's stored device key is not the 32 bytes a key is"),
     );
     if (stored.kind === PLAINTEXT_VAULT && vault.kind !== PLAINTEXT_VAULT) {
       // a seed from before the vault: sealed now, and the plaintext row overwritten in place
-      const sealed = yield* Result.await(sealChecked(vault, stored.bytes));
+      const sealed = yield* Result.await(sealSeed(vault, stored.bytes));
       const residue = yield* Result.await(
         Result.tryPromise({
-          try: () => replacePlaintext(driver, sealedRow(vault, sealed)),
+          try: () =>
+            overwritePlaintext(driver, UPDATE, [sealedText(vault, sealed), "seed"], "seed"),
           catch: unavailable(
             "this install's plaintext device key could not be replaced by its sealed form",
           ),
@@ -198,19 +168,6 @@ async function rememberedSeed(
       ),
     });
     return Result.ok(yield* Result.await(opened));
-  });
-}
-
-/** Seals, then opens what it sealed: a vault that cannot read back fails the boot that minted. */
-function sealChecked(vault: SeedVault, seed: Uint8Array) {
-  return Result.tryPromise({
-    try: async () => {
-      const sealed = await vault.seal(seed);
-      if (!bytesEqual(await vault.open(sealed), seed))
-        throw new Error(`the ${vault.kind} vault does not open what it sealed`);
-      return sealed;
-    },
-    catch: unavailable(`the ${vault.kind} vault could not seal this install's device key`),
   });
 }
 

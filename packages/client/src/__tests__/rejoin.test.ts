@@ -3,6 +3,7 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
+import { sqlEventStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import {
   cursorsFrame,
@@ -112,6 +113,38 @@ describe("$recovery below a peer's compaction floor (D46)", () => {
     ]);
     offStatus();
     offFloor();
+    await mesh.stop();
+  });
+
+  test("a state rebuilt without what a snapshot install brought raises the issue at open (gaps U33)", async () => {
+    // SAFETY: test fixture sequence numbers
+    const at = (n: number) => n as SeqNum;
+    const driver = bunSqliteDriver(":memory:");
+    const open = async () =>
+      (
+        await createMesh({
+          storage: sqlite({ driver }),
+          schema: schema(),
+          identity: device,
+          now: () => T0,
+          transports: [],
+        })
+      ).unwrap();
+    const first = await open();
+    await first.ready();
+    expect(first.recovery.belowFloor()).toEqual([]);
+    await first.stop();
+    // the log says an install brought the author through 5; the state that held those rows is gone
+    const log = (await sqlEventStore(driver)).unwrap();
+    (await log.recordInstalled(new Map([[author, at(5)]]))).unwrap();
+
+    const mesh = await open();
+    await mesh.ready();
+    expect(mesh.recovery.belowFloor()).toEqual([
+      { floor: new Map([[author, at(5)]]), reason: "rebuilt", message: expect.any(String) },
+    ]);
+    expect(mesh.status.get().health).toBe("blocked-recovery");
+    expect(mesh.recovery.acceptState(far.peerId)).toBe("nothing-to-accept");
     await mesh.stop();
   });
 

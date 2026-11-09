@@ -66,16 +66,17 @@ ask **before** discarding anything:
 export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFailure>> =>
   Result.gen(async function* () {
     const floor = yield* Result.await(store.compactedBelow());
-    const installed = yield* Result.await(store.installedBelow());
-    return Result.ok(floor.synced.size === 0 && floor.local.size === 0 && installed.size === 0);
+    return Result.ok(floor.synced.size === 0 && floor.local.size === 0);
   });
 ```
 
 A device that has never compacted can rebuild everything, which is most devices for most of their
-lives. One that has cannot, and its remedy is a peer rather than its own disk. Nor can one that
-took rows from a snapshot install: the log records the floor the install left
-(`EventStore.installedBelow`, gaps U33), so the question is answered by the log alone, as it must
-be when the state file is the thing about to be discarded.
+lives. One that has cannot, and its remedy is a peer rather than its own disk. One that took rows
+from a snapshot install can rebuild everything above the floor the install left, which the log
+records (`EventStore.installedBelow`, gaps U33): its log kept every event it was sent. What lies
+under that floor the engine names (`Engine.rebuiltBelow`) and the mesh raises as D46's `$recovery`
+issue until peers send it again, so the install floor does not count against `refoldable`
+(decided 2026-11-09, Jace delegated the call; the 2026-11-08 build counted it and refused).
 
 **`acked` is not derived either, and losing it is now a decision rather than a surprise.** It
 moves when a *peer acknowledges*, which touches no row and leaves no event; the map it comes from,
@@ -285,13 +286,14 @@ to migrate it in place or to rejoin from a peer — neither of which is "no migr
 That is a real limit on the borrowed idea rather than a detail. A young replica gets the clean
 version; an old one gets a migration or a rejoin, and has to be told which.
 
-The same limit reaches every device that joined by snapshot, and joining by snapshot is the
-normal path for a new device (gaps U33): its log records the install's floor, so `refoldable` is
-`false` from its first boot and a table-shape schema change refuses with "Keep the previous
-schema, or rejoin from a peer" exactly as it does over a compacted log. So "young replica" means
-"filled by events", not "new". A migration that copies rows from the old state file into the new
-one is what lets these devices take a schema change in place; it is planned, not built
-(decided 2026-11-08, Jace delegated the call: refusing is the safe default until it exists).
+A device that joined by snapshot, the normal path for a new one, is not refused (gaps U33,
+decided 2026-11-09, Jace delegated the call): its log records the install's floor, and keeps every
+event it was sent, so a new state file folds whole above that floor. What lies under it the engine
+names (`Engine.rebuiltBelow`) and the mesh raises as D46's `$recovery` issue (`BelowInstalledFloor`,
+reason `rebuilt`), cleared once peers' events or a peer's state bring the coverage back up. The
+2026-11-08 build refused the schema change instead ("Keep the previous schema, or rejoin from a
+peer"), as over a compacted log. A migration that copies rows from the old state file into the new
+one would keep those rows on the device through the change; it is still planned, not built.
 
 This is what makes the fingerprint added in `syncmesh_meta` this week
 *mostly* redundant: it compares DDL text and then reinstalls in place, which

@@ -1,4 +1,3 @@
-import { parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { parseTableName, syncSchema, t } from "@syncmesh/schema";
 import { describe, expect, test } from "bun:test";
@@ -6,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import type { SqlDriver } from "../driver.js";
 
 import { pgStageFunctionName } from "../dialect-guard.js";
+import { A, at, entry, seq } from "../driver-tests/fixtures.js";
 import { openStores, schemaName } from "../open-stores.js";
 import { openPair } from "./pair.js";
 
@@ -22,7 +22,6 @@ const schema = syncSchema({
   },
 });
 const tables = [schema.tables.notes];
-const AUTHOR = parsePeerId("a".repeat(64)).unwrap();
 
 const raw = async (driver: SqlDriver, sql = `INSERT INTO notes (id, body) VALUES ('raw', 'x')`) =>
   (
@@ -63,9 +62,11 @@ describe("strict capture at the open", () => {
   test("turning it off is no shape change: a log that cannot refold still opens", async () => {
     const driver = await openPair(":memory:", schemaName(tables));
     const stores = (await openStores(driver, { tables })).unwrap();
-    // a snapshot install with no events behind it: this log can no longer rebuild every row, so a
-    // changed table shape is refused at the open (U33)
-    (await stores.events.recordInstalled(new Map([[AUTHOR, parseSeqNum(3).unwrap()]]))).unwrap();
+    // a compacted log can no longer rebuild every row, so a changed table shape is refused at the open
+    (await stores.events.append(entry(A, 1, 10))).unwrap();
+    expect(
+      (await stores.events.compactBelow(new Map([[A, seq(1)]]), "synced", at(100))).unwrap(),
+    ).toBe(1);
     const fingerprint = await schemaRow(driver);
     const off = await openStores(driver, { tables, strict: false });
     expect(off.isOk()).toBe(true);

@@ -81,7 +81,7 @@ export {
 } from "./quarantine.js";
 export type { FleetApi, FleetWindow, SchemaReading } from "./fleet.js";
 export type { CoverageTracker } from "./coverage.js";
-export { higherFloor, trackCoverage } from "./coverage.js";
+export { belowFloor, higherFloor, trackCoverage } from "./coverage.js";
 export type { FoldDeps, FoldPath } from "./fold.js";
 export { createFoldPath } from "./fold.js";
 export type { Boot } from "./boot.js";

@@ -121,8 +121,9 @@ export function allRows(state: State): readonly RowWrite[] {
 /**
  * A state store held in memory, for tests and for a mesh whose log is in memory too.
  *
- * Never pair it with a persistent log: after one snapshot install the log records the install's
- * floor, and every later boot finds this store empty over it and refuses with `StateCorrupt`.
+ * Pair it with a persistent log only knowing the cost: after one snapshot install the log records
+ * the install's floor, and every later boot finds this store empty over it, rebuilds without the
+ * installed rows and raises them as a `$recovery` issue until peers send them again (gaps U33).
  */
 export function createMemoryStateStore(): StateStore {
   const tables = new Map<TableName, Map<RowKey, RowRecord>>();

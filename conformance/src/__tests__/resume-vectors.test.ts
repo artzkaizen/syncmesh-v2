@@ -4,7 +4,7 @@ import { bytesToHex, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import raw from "../../resume-vectors.json" with { type: "json" };
-import { resumeVectors } from "../generate-resume-vectors.js";
+import { resumeVectors, vectorSealer } from "../generate-resume-vectors.js";
 
 const hex = (s: string) => hexToBytes(s).unwrap();
 
@@ -15,7 +15,7 @@ describe("Durable Object resume script vectors — frozen (D33, D36)", () => {
 
   for (const v of raw.vectors) {
     test(v.description, () => {
-      const kept = decodeResume(hex(v.attachmentHex));
+      const kept = decodeResume(hex(v.attachmentHex), vectorSealer());
       expect(kept.nonce && bytesToHex(kept.nonce)).toBe(v.nonceHex);
       expect(
         kept.offer && {
@@ -33,21 +33,24 @@ describe("Durable Object resume script vectors — frozen (D33, D36)", () => {
       const frames = [...(v.joinHex === undefined ? [] : [v.joinHex]), ...v.grantsHex];
       expect(kept.frames.map(bytesToHex)).toEqual(frames);
       // and writing what was read lands on the same bytes
-      const again = encodeResume({
-        ...omitUndefined({
-          nonce: kept.nonce,
-          offer: kept.offer,
-          session: kept.session,
-          join: v.joinHex === undefined ? undefined : hex(v.joinHex),
-        }),
-        grants: v.grantsHex.map(hex),
-      });
+      const again = encodeResume(
+        {
+          ...omitUndefined({
+            nonce: kept.nonce,
+            offer: kept.offer,
+            session: kept.session,
+            join: v.joinHex === undefined ? undefined : hex(v.joinHex),
+          }),
+          grants: v.grantsHex.map(hex),
+        },
+        vectorSealer(),
+      );
       expect(again && bytesToHex(again)).toBe(v.attachmentHex);
     });
   }
 
   test("a script from before the head existed still reads as its frames", () => {
-    const kept = decodeResume(hex(raw.legacy.attachmentHex));
+    const kept = decodeResume(hex(raw.legacy.attachmentHex), vectorSealer());
     expect(kept.nonce).toBeUndefined();
     expect(kept.offer).toBeUndefined();
     expect(kept.session).toBeUndefined();
@@ -55,7 +58,7 @@ describe("Durable Object resume script vectors — frozen (D33, D36)", () => {
   });
 
   test("an empty attachment is an empty script", () => {
-    expect(decodeResume(null)).toEqual({
+    expect(decodeResume(null, vectorSealer())).toEqual({
       nonce: undefined,
       offer: undefined,
       session: undefined,

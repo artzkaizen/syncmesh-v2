@@ -38,6 +38,7 @@ export type {
   Accepted,
   BelowFloor,
   BelowFloorReason,
+  BelowInstalledFloor,
   BelowPeerFloor,
   BelowRelayFloor,
   Rejoins,
