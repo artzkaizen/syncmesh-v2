@@ -3,7 +3,7 @@ import type { DocLimits, DocumentAdapter } from "@syncmesh/docs";
 import { DEFAULT_LIMITS, UpdateRejected } from "@syncmesh/docs";
 import { parseAdapterId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
-import { LoroDoc, VersionVector } from "loro-crdt";
+import { LoroDoc, VersionVector, decodeImportBlobMeta, type PeerID } from "loro-crdt";
 
 /** `loro@1`: the major is the compatibility contract (RFC-0023 §10), Loro's own 1.x encoding. */
 export const LORO_ID = parseAdapterId("loro@1").unwrap();
@@ -48,6 +48,53 @@ export function decodeVersion(bytes: Uint8Array): Result<VersionVector, UpdateRe
     try: () => VersionVector.parseJSON(entries),
     catch: (cause) => reject("not a loro@1 version", cause),
   });
+}
+
+/** Per peer, the counters `[start, end)` the updates' operations span: what a write made. */
+function spans(updates: readonly Uint8Array[]): Map<PeerID, readonly [number, number]> {
+  const out = new Map<PeerID, readonly [number, number]>();
+  for (const update of updates) {
+    const meta = decodeImportBlobMeta(update, false);
+    const starts = meta.partialStartVersionVector.toJSON();
+    for (const [peer, end] of meta.partialEndVersionVector.toJSON()) {
+      const start = starts.get(peer) ?? 0;
+      if (end <= start) continue;
+      const held = out.get(peer);
+      out.set(
+        peer,
+        held === undefined ? [start, end] : [Math.min(held[0], start), Math.max(held[1], end)],
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * The compensation of `updates` in `doc` (RFC-0023 §9): on a fork at the version the write left —
+ * its own last operations and everything before them — the diff back to the version before it is
+ * applied as `replica`'s edit, and exported. Imported into a document holding later edits, those
+ * operations merge as a concurrent edit does, so what anyone wrote since stands. `undefined` when
+ * importing it would change nothing.
+ */
+function compensation(doc: LoroDoc, updates: readonly Uint8Array[], replica: bigint) {
+  const made = spans(updates);
+  if (made.size === 0) return undefined;
+  const after = [...made].map(([peer, [, end]]) => ({ peer, counter: end - 1 }));
+  const before = doc.frontiersToVV(after).toJSON();
+  for (const [peer, [start]] of made) before.set(peer, start);
+  const fork = doc.forkAt(after);
+  fork.setPeerId(replica);
+  const from = fork.oplogVersion();
+  fork.applyDiff(fork.diff(after, doc.vvToFrontiers(new VersionVector(before)), false), {
+    fullState: true,
+  });
+  fork.commit();
+  if (from.compare(fork.oplogVersion()) === 0) return undefined;
+  const update = fork.export({ mode: "update", from });
+  // the write's effect may be gone already — undone, or overwritten by everyone since
+  const probe = doc.fork();
+  probe.import(update);
+  return JSON.stringify(probe.toJSON()) === JSON.stringify(doc.toJSON()) ? undefined : update;
 }
 
 /**
@@ -102,6 +149,11 @@ export function loro(limits: Partial<DocLimits> = {}): DocumentAdapter<LoroDoc> 
         }),
       ),
     watchLocal: (doc, listener) => doc.subscribeLocalUpdates(() => listener()),
+    compensate: (doc, updates, replica) =>
+      Result.try({
+        try: () => compensation(doc, updates, replica),
+        catch: (cause) => reject("loro could not compensate those updates", cause),
+      }),
   };
 }
 

@@ -48,7 +48,7 @@ import { createHub, type Unsubscribe } from "./listeners.js";
 import { type PurgeApi, createPurge } from "./purge.js";
 import { createQuarantine, createRetries, withRetry } from "./quarantine.js";
 import { recentHeaders } from "./recent.js";
-import { createRevert } from "./revert.js";
+import { createRevert, type DocCompensator } from "./revert.js";
 import { createSnapshotPath } from "./snapshot.js";
 import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
@@ -106,8 +106,13 @@ export interface Engine
    * this is that the row was deleted — the rest wants the event log to join against.
    */
   readonly deletedAt: (table: TableName, key: RowKey) => Stamp | undefined;
-  /** Writes the compensating event for one of this engine's last `undoDepth` writes, in that event's partition. */
-  readonly revert: (id: EventId) => Promise<Result<Reverted, RevertError>>;
+  /**
+   * Writes the compensating event for one of this engine's last `undoDepth` writes, in that
+   * event's partition. Its document updates are compensated by `docs` — a document runtime's
+   * (RFC-0023 §9) — and without it reported `skipped: document`, and a write of documents alone
+   * refused.
+   */
+  readonly revert: (id: EventId, docs?: DocCompensator) => Promise<Result<Reverted, RevertError>>;
   readonly canRevert: (id: EventId) => boolean;
   /**
    * Per author, the highest sequence number below which this engine holds **every** event — the
@@ -244,6 +249,7 @@ export function createEngine(options: EngineOptions): Engine {
     atomic: atomic !== undefined,
     initial: boot?.state ?? emptyState(),
     hasAdapter,
+    docs: options.docs,
   });
   const { getState, setState, persist, persistCoverage, notify } = foldPath;
   const fold: typeof foldPath.fold = (entries, source) => {
@@ -272,8 +278,9 @@ export function createEngine(options: EngineOptions): Engine {
   const snapshots = createSnapshotPath(options, {
     ...held,
     adopt: covered.adoptUnheld,
-    // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
-    persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
+    // in a turn, so a purge never runs between a snapshot's state commit and its own (D45); in
+    // one transaction, so the rows and the document columns they reseat land together
+    persist: (batch: FoldBatch) => atomically((scoped) => persist(batch, scoped)),
     persistCoverage: () =>
       turn(() => persistInstall(store, coverage, errors, () => persistCoverage(plain))),
     notify,
@@ -282,7 +289,8 @@ export function createEngine(options: EngineOptions): Engine {
   const repair = createRepairPath({
     getState,
     mergeInto: (table, key, record) => setState(mergeRecord(getState(), table, key, record, merge)),
-    persist: (batch) => turn(() => persist(batch, plain)),
+    // rows, a lineage the repair moved and the columns that follow it, together
+    persist: (batch) => atomically((scoped) => persist(batch, scoped)),
     notify,
     docs: options.docs,
     receive: clock.receive,
@@ -321,8 +329,6 @@ export function createEngine(options: EngineOptions): Engine {
 
   const revert = createRevert({ ...held, undo, undoDepth, validate, mutate: writes.mutate });
 
-  const chains = createFeedPath({ store, feeds, receiveBatch });
-
   const receiveAndRetry = withRetry(receiveBatch, parked);
 
   return {
@@ -331,7 +337,7 @@ export function createEngine(options: EngineOptions): Engine {
     ...writes,
     receiveBatch: receiveAndRetry,
     receive: (entry) => receiveAndRetry([entry]),
-    ...chains,
+    ...createFeedPath({ store, feeds, receiveBatch }),
     state: getState,
     rowsIn: (table, partition) => readRowsIn(getState(), table, partition),
     deletedAt: (table, key) => {

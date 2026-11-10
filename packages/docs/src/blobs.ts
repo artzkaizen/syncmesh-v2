@@ -117,5 +117,6 @@ export function withBlobs(engine: DocsEngine, blobs: DocBlobs | undefined): Docs
     cursors: engine.cursors,
     mayEditDoc: engine.mayEditDoc,
     writeDerived: engine.writeDerived,
+    revert: engine.revert,
   };
 }

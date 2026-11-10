@@ -326,6 +326,7 @@ pub trait DocumentAdapter: Send + Sync + 'static {
     fn version(&self, doc: &Self::Doc) -> Version;
     /// Everything since `since`, or None when nothing is new — what a flush exports.
     fn updates_since(&self, doc: &Self::Doc, since: &Version) -> Result<Option<Vec<u8>>, AdapterError>;
+    /// Built as `compensate(doc, updates, replica)` (E30 P6): see the Loro mapping below.
     /// One update that undoes exactly the effect of `action`'s updates on the current document,
     /// leaving concurrent and later edits by others in place. None when nothing remains to undo.
     fn compensating_update(&self, doc: &mut Self::Doc, action: &[&[u8]]) -> Result<Option<Vec<u8>>, AdapterError>;
@@ -348,7 +349,7 @@ registry holds. The TypeScript SPI (`@syncmesh/documents`) has the same six oper
 | `snapshot(floor)` | `export(ShallowSnapshot(floor))`, or `export(Snapshot)` when `floor` is None |
 | `version` | `oplog_vv().encode()` |
 | `updates_since` | `export(Updates { from: vv })` |
-| `compensating_update` | fork at the action's dependencies, import only the action's updates, `diff(after, before)`, `apply_diff` onto the live doc, export the resulting local update |
+| `compensating_update` | fork at the action's dependencies, import only the action's updates, `diff(after, before)`, `apply_diff` onto the live doc, export the resulting local update. **Built as `compensate(doc, updates, replica)` (E30 P6, 2026-11-09):** the replica id is an argument, the diff back is applied on a fork at the version the action left (not the live doc) as that replica's edit, and the fork's export is the update, so it merges with later edits as a concurrent one |
 | `watch_local` | `subscribe_local_update` |
 
 **Replica ids.** Loro corrupts history when two concurrent writers share a peer id, or when a
@@ -518,6 +519,37 @@ A joiner installs it as follows. It fetches the blob, writes it to the column, a
 `covers` as the doc's floor. Every doc change above `covers` arrives as ordinary catch-up and
 lands in the tail. §7.3 covers who is trusted to sign one.
 
+**Built (E30 P5, decided 2026-11-09, Jace delegated the call):** a snapshot page has a second
+version, `[2, peers, tables, partitions, rows, checkpoints, complete]`, read and written by both
+runtimes. Each checkpoint is `[producerIndex, envelope, snapshot]`: the signed envelope, its
+producer as an index into the page's peers (after every peer the rows name), and the snapshot
+bytes **inline**, not by blob reference, so a joiner needs no blob store and no second round trip.
+`complete` is the sender's word that every document of the page's rows it holds a head for has a
+checkpoint there. A page spends at most half a frame on checkpoints; one that does not fit is left
+out and the page is marked incomplete. A sender without a document runtime sends version 1, byte
+for byte as before. The joiner installs the checkpoints after the rows, and below a peer's floor
+adopts the coverage only when every page was complete and every checkpoint's floor is held
+(D46's doc-column rule, lifted). The joiner checks `complete` rather than take it: every row of
+the pages whose cell names a lineage must have come with a checkpoint (PR #49 fix round 1). A
+document still on its first lineage, never replaced, leaves no mark in its row, so for it the
+joiner still takes the sender's word. A checkpoint whose producer may not edit its row
+(`engine.mayEditDoc`, as for a provisional install) is not installed and earns no floor; since
+the install then answers `false` for the whole snapshot, a joiner takes no floor at all from a
+peer that may not edit some documented row it serves (a read-only member, an owner-only `update`
+rule, a relay that is not the authority). A page sheds checkpoints from its end until its encoded
+bytes fit a frame beside its rows, and a sender whose document runtime throws while serving sends
+its pages with no checkpoints, marked incomplete, so the exchange still closes (fix round 2). A
+document runtime that rejects on either side is reported to `JoinDeps.onError` as
+`SnapshotDocsFailed`, and a joiner whose install rejects still settles, adopting no floor (fix
+round 3).
+Departs: the snapshot does not ride the bulk profile as a blob; `DocRef.status` is not `behind`
+during a join, since the bytes arrive with the rows; there is no page-version negotiation, so a
+build from before version 2 cannot read a documented page, counts it missing and asks again
+without end (accepted before 1.0); each snapshot request makes the server materialise and sign a
+checkpoint per document, with no cache or rate limit; the page budget assumes the default frame,
+so a link with a smaller `maxFrameBytes`, or a page of rows alone past a frame, can still carry a
+page too large for it, as before version 2.
+
 ## 6 · Storage
 
 ### 6.1 The app's column
@@ -531,6 +563,23 @@ lands in the tail. §7.3 covers who is trusted to sign one.
   columns from the logged image. A guard trigger refuses any statement that changes them while
   capture is armed (`DocColumnWrite`). The materialiser writes them with capture disarmed,
   through the dialect's existing `arm`/`disarm` switch.
+- **Built (E30, 2026-11-09, Jace delegated the call):** every cover — a materialisation, a
+  checkpoint install, an opaque host's provisional install — writes its snapshot into the row's
+  column in the cover's own transaction (`StateStore.writeDocColumns`, the fold's guard state on
+  both SQL dialects). The fold rewrites the column from the held snapshot wherever a batch can
+  leave it behind: a row inserted, re-inserted, or rewritten by a snapshot, repair or purge, and a
+  document whose winning lineage moved; when the snapshot held is of a lineage that no longer
+  wins, the column is `NULL` until the winner is materialised. `doc_snapshots` stays the engine's
+  own copy. A boot that rebuilds the state from the log, or folds a log tail, writes each
+  committed row's columns back from the held snapshot of the winning lineage the same way (PR #49
+  fix round 1), in the same `atomic` transaction as its commit; a snapshot install and a repair
+  commit their rows and the columns they reseat in one transaction as well. Without `atomic`, every
+  boot writes every document column afresh, which finishes any write a crash cut between its rows
+  and their columns (fix round 2). An engine given `atomic` but no `docStore` restores no column at
+  boot, as without `atomic` (fix round 3). Departs: devices write full snapshots, not shallow ones
+  (D41 choice 3); the Rust device projects no document column yet (P7); a snapshot install or
+  repair whose transaction rolls back has already merged its rows into the engine's memory, which
+  holds them until the next boot while the database does not.
 
 ### 6.2 Engine tables, declared once in Drizzle 1.0
 
@@ -738,9 +787,21 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
   - **Docs:** `compensating_update(doc, action's updates)` for each doc the action touched, on
     the winning lineage. A `replace()` in the action is undone by a new genesis carrying the
     previous lineage's snapshot. That is a forward write, with no history surgery.
-  - Until doc compensation lands (P6), a revert of a write holding document updates alone is
-    refused and stays revertable, and the document updates in a mixed write are reported as
-    `skipped: document` while its rows are compensated.
+  - **Built (E30 P6, 2026-11-09, Jace delegated the call):** the SPI's `compensate(doc,
+    updates, replica)` makes the compensating update against the document as the action left it,
+    so it merges with later edits as a concurrent edit (`loro@1`: the diff back to the version
+    before the action, applied on a fork at the version after it; `oplog@1`: a retract
+    operation). `engine.revert(id, compensator)` takes it; `documents.revert(id)` and
+    `mesh.revert` (with `documents`) pass one, so a write of documents alone reverts and a mixed
+    write's rows and documents go back in one event. A document another replace has moved on, or
+    where nothing of the action shows, is `skipped: superseded`. Without a document runtime the
+    engine still refuses a revert of documents alone and reports `skipped: document`. Departs: a
+    map key or other last-writer cell someone set after the action may lose to the compensation
+    by Lamport order, since the compensation is concurrent with it rather than older; the Rust
+    adapter implements `compensate`, but the Rust device has no document runtime to revert with
+    (P7); `history()` with doc revisions and `openAt` are not built. The rows are compensated
+    against the state as the revert's event is written, after the document compensator's wait,
+    so an edit that folds meanwhile is seen (PR #49 fix round 1).
 - **Redo** is `undo(undoAction)`. The undo stack is local and per principal. The history is
   shared.
 - **`history(table, key)`** extends today's `rowHistory` (`client/src/history.ts`). Doc updates
@@ -1124,7 +1185,8 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    the rest `skipped: superseded`, report a `max`/`min` the rule will not let go back as
    `skipped: merge`, delete rows the write inserted (cells a colleague wrote since reported
    `skipped: overridden`), re-insert rows it deleted unless rewritten since. The refusal of a revert of document
-   updates alone (ade88cb) stays until doc compensation (P6).
+   updates alone (ade88cb) stays for an engine reverting without a document runtime; with one,
+   documents are compensated too (E30 P6, §9).
 4. **Derived columns — decided 2026-11-08 by Jace: each replica computes; they never travel.**
    A derived column is one the app does not write but computes from the document, like
    `title: from("content", d => …)` in §4.1. Every device runs the `from` function on its open

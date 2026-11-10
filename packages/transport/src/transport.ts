@@ -90,6 +90,8 @@ export interface TransportContext {
    * every bridge so the count of requests outlives each session and an issue reaches the app.
    */
   readonly rejoins?: BridgeOptions["rejoins"];
+  /** The documents behind a snapshot's rows, as checkpoints in its pages (E30 P5). */
+  readonly snapshotDocs?: BridgeOptions["snapshotDocs"];
   /**
    * Whether this transport is the one to carry a frame (E28). The mesh supplies it from
    * `pickRoutes`; a transport running without one carries everything, which is what every
@@ -448,6 +450,7 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
             certificate: ctx.certificate,
             trust: ctx.trust,
             rejoins: ctx.rejoins,
+            snapshotDocs: ctx.snapshotDocs,
             // the same key ring and the same gate on every link: what a device can read, and what
             // it may hand on, do not depend on the medium (book ch. 14, D24)
             crypto: ctx.crypto,
@@ -486,11 +489,7 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
           return bridge;
         }
         // named, so it joins the peer's one conversation; what this transport keeps is its seat
-        const member: SessionLink = {
-          id: name,
-          link,
-          ...omitUndefined({ route: options.route }),
-        };
+        const member: SessionLink = { id: name, link, ...omitUndefined({ route: options.route }) };
         const leave = ctx.sessions.join(peer, member, build);
         const session = ctx.sessions.get(peer);
         if (session === undefined) {

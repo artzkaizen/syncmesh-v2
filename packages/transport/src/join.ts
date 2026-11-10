@@ -3,15 +3,18 @@ import type { KeyedRecord, LineageCellRefused, PeerId, SeqNum } from "@syncmesh/
 
 import { narrows, scopeFrom } from "@syncmesh/engine";
 import {
-  decodeSnapshotRows,
+  decodeSnapshotPage,
   encodeRecord,
-  encodeSnapshotRows,
+  encodeSnapshotPage,
   verifyCheckpoint,
+  type SnapshotPage,
 } from "@syncmesh/wire";
 
+import type { SnapshotDocs, SnapshotDocsFailed } from "./join-docs.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 import type { Withheld } from "./withheld.js";
 
+import { adoptAfterDocs, carriedDocs, fittedPage, servedDocs } from "./join-docs.js";
 import { snapAckFrame, snapChunkFrame, snapManifestFrame, snapRequestFrame } from "./snap-frame.js";
 import { servable } from "./withheld.js";
 
@@ -68,6 +71,12 @@ export interface JoinDeps {
    * of a rule this build does not run (RFC-0023 §16.1). Nothing was installed or adopted.
    */
   readonly onRefused?: (refused: LineageCellRefused) => void;
+  /**
+   * The document runtime behind `docs` rejected serving or installing a snapshot's documents. The
+   * exchange goes on without them: a page served is sent with none and marked incomplete, and an
+   * install adopts no coverage it gated on them.
+   */
+  readonly onError?: (error: SnapshotDocsFailed) => void;
   /** Distinguishes one exchange from another; the sender picks it. */
   readonly idPrefix: string;
   /**
@@ -88,6 +97,12 @@ export interface JoinDeps {
    */
   readonly serves?: (asked: Interest | undefined) => Interest | undefined;
   /**
+   * The documents behind the rows: served as checkpoints in each page, and installed after the
+   * rows of a snapshot taken here. Absent, pages carry rows alone (version 1), and a schema with
+   * document columns adopts no coverage below a peer's floor (D46).
+   */
+  readonly docs?: SnapshotDocs;
+  /**
    * The gated tables (D24): a snapshot served from here carries none of their rows and claims none
    * of the authority's run — a certificate over the whole state no longer covers it, so the install
    * stays provisional, which is the honest state of a slice nobody signed.
@@ -102,8 +117,9 @@ export interface JoinDeps {
  * peer's compaction floor adds `floor`: the authors this device is below and the floor the peer
  * claimed for each. Then an unvouched install, where allowed at all, adopts per author at most
  * that floor, for those authors only; a vouched one adopts what the certificate signs, as any
- * vouched install does; and on a schema with document columns nothing is adopted, because a snapshot
- * carries no doc snapshots to stand for the doc updates the floor removed.
+ * vouched install does; and on a schema with document columns nothing is adopted unless every page
+ * carried a checkpoint for each of its documents and each installed (E30 P5): rows alone do not
+ * stand for the doc updates the floor removed.
  */
 export interface JoinPolicy {
   readonly adoptUnvouched: boolean;
@@ -127,12 +143,19 @@ interface Incoming {
   readonly chunks: number;
   readonly at: Cursors;
   readonly scope?: Interest;
-  readonly pages: Map<number, readonly KeyedRecord[]>;
+  readonly pages: Map<number, SnapshotPage>;
   /** The sender's relayed certificate, verified against the rows once they are all here. */
   readonly certificate?: Uint8Array;
   /** The asker's policy for this exchange, taken from the queue when the manifest arrived. */
   readonly policy: JoinPolicy;
 }
+
+/** The pages of a join that has all of them, in the order the manifest numbered them. */
+const inOrder = (held: Incoming) =>
+  [...Array(held.chunks).keys()].flatMap((i) => {
+    const page = held.pages.get(i);
+    return page === undefined ? [] : [page];
+  });
 
 export interface JoinExchange {
   /**
@@ -157,8 +180,8 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
   const { engine, send, onSnapshot, idPrefix, certificate, trust } = deps;
   const rowsPerChunk = deps.rowsPerChunk ?? 500;
   const incoming = new Map<string, Incoming>();
-  /** The rows each exchange sent, kept so a page named as missing can be sent again. */
-  const outgoing = new Map<string, readonly (readonly KeyedRecord[])[]>();
+  /** The pages each exchange sent, kept so a page named as missing can be sent again. */
+  const outgoing = new Map<string, readonly Uint8Array[]>();
   let exchanges = 0;
   /**
    * One policy per request still unanswered, oldest first. There is no default: an empty queue
@@ -167,7 +190,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
   const asked: JoinPolicy[] = [];
 
   /** Answers a request with a manifest and then the pages, which is the whole of the sending side. */
-  const serve = (interest: Interest | undefined): void => {
+  const serve = (interest: Interest | undefined): Promise<void> | undefined => {
     const snapshot = heldScope(
       engine.coverage(),
       interest,
@@ -180,7 +203,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     for (let i = 0; i < snapshot.rows.length; i += rowsPerChunk)
       pages.push(snapshot.rows.slice(i, i + rowsPerChunk));
     const id = `${idPrefix}:${(exchanges += 1)}`;
-    outgoing.set(id, pages);
+    // the manifest goes out now, in the order requests came; the pages follow once built
     send(
       "snap-manifest",
       snapManifestFrame(
@@ -192,23 +215,32 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
         certificate?.(),
       ),
     );
-    pages.forEach((page, index) =>
-      send("snap-chunk", snapChunkFrame(id, index, encodeSnapshotRows(page))),
-    );
+    const sendPages = (encoded: readonly Uint8Array[]) => {
+      outgoing.set(id, encoded);
+      encoded.forEach((bytes, index) => send("snap-chunk", snapChunkFrame(id, index, bytes)));
+    };
+    const { docs } = deps;
+    if (docs === undefined) {
+      sendPages(pages.map((rows) => encodeSnapshotPage({ rows })));
+      return undefined;
+    }
+    return Promise.all(
+      pages.map(async (rows) => fittedPage(rows, await servedDocs(docs, rows, deps.onError))),
+    ).then(sendPages);
   };
 
-  const onManifest = (frame: Extract<SnapshotFrame, { kind: "snap-manifest" }>): void => {
+  const onManifest = (frame: Extract<SnapshotFrame, { kind: "snap-manifest" }>) => {
     const policy = asked.shift();
     // nobody asked: nothing installs and nothing is adopted, and the pages that follow find no
     // exchange to land in (gaps U20)
-    if (policy === undefined) return;
+    if (policy === undefined) return undefined;
     const base = { chunks: frame.chunks, at: frame.at, pages: new Map(), policy };
     const started =
       frame.certificate === undefined ? base : { ...base, certificate: frame.certificate };
     const held: Incoming = frame.scope === undefined ? started : { ...started, scope: frame.scope };
     incoming.set(frame.id, held);
     // an empty snapshot has no pages to wait for, so it is already complete
-    if (frame.chunks === 0) void complete(frame.id, held);
+    return frame.chunks === 0 ? complete(frame.id, held) : undefined;
   };
 
   const onChunk = async (frame: Extract<SnapshotFrame, { kind: "snap-chunk" }>): Promise<void> => {
@@ -218,9 +250,9 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     // a page past the manifest's count is no page of it: counted, it would complete the set
     // with a real page still missing (gaps U35)
     if (frame.index >= held.chunks) return;
-    const rows = decodeSnapshotRows(frame.bytes);
+    const page = decodeSnapshotPage(frame.bytes);
     // an unreadable page is a missing page — the ack names it and the sender sends it again
-    if (rows.isOk()) held.pages.set(frame.index, rows.value);
+    if (page.isOk()) held.pages.set(frame.index, page.value);
     if (held.pages.size === held.chunks) return complete(frame.id, held);
     // the last page the manifest named has come and something is still short: ask for the gaps
     if (frame.index === held.chunks - 1) {
@@ -245,10 +277,40 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
    * for verification. The history still arrives, still verifies, and merges over the top.
    */
   const complete = async (id: string, held: Incoming): Promise<void> => {
-    const rows = [...Array(held.chunks).keys()].flatMap((i) => [...(held.pages.get(i) ?? [])]);
+    const pages = inOrder(held);
+    const rows = pages.flatMap((page) => [...page.rows]);
+    const carried = carriedDocs(pages, deps.docs !== undefined);
     const signed = certified(held, rows);
     const vouched = signed !== undefined;
-    const synced = adopted(held, signed, engine.hasDocColumns());
+    // every page said it holds a checkpoint for each of its documents: those, installed, stand
+    // for the doc updates a floor removed, and the coverage may be adopted after them (E30 P5)
+    const wanted = adopted(held, signed, engine.hasDocColumns() && !carried.complete);
+    // below a floor, documents gate the adoption: it waits on their checkpoints
+    const gated = wanted !== undefined && held.policy.floor !== undefined && engine.hasDocColumns();
+    const installed = await installRows(held, gated ? undefined : wanted, rows);
+    incoming.delete(id);
+    // every page came, so the exchange is closed either way: a refused one is not sent again
+    send("snap-ack", snapAckFrame(id, []));
+    if (installed.isErr()) {
+      held.policy.settled?.({ kind: "refused", refused: installed.error });
+      return deps.onRefused?.(installed.error);
+    }
+    const adoption = await adoptAfterDocs(deps, rows, carried, gated, () =>
+      installRows(held, wanted, []),
+    );
+    if (adoption.isErr()) deps.onRefused?.(adoption.error);
+    const plain = { rows: installed.value.rows, provisional: !vouched };
+    const report = held.scope === undefined ? plain : { ...plain, scope: held.scope };
+    onSnapshot?.(report);
+    held.policy.settled?.({ kind: "installed", installed: report, vouched });
+  };
+
+  /** Installs `rows`, adopting `synced` after them when given and this device's own coverage when not. */
+  const installRows = (
+    held: Incoming,
+    synced: Cursors | undefined,
+    rows: readonly KeyedRecord[],
+  ) => {
     // `local` stays empty: a device's own local-only events never travel, so a snapshot has
     // nothing to say about them and adopting a floor for them would be a claim it cannot make
     const coverage = synced === undefined ? engine.coverage() : { synced, local: new Map() };
@@ -257,18 +319,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     // neither
     const snapshot: Snapshot =
       synced !== undefined && held.scope !== undefined ? { ...base, scope: held.scope } : base;
-    const installed = await engine.installSnapshot(snapshot);
-    incoming.delete(id);
-    // every page came, so the exchange is closed either way: a refused one is not sent again
-    send("snap-ack", snapAckFrame(id, []));
-    if (installed.isErr()) {
-      held.policy.settled?.({ kind: "refused", refused: installed.error });
-      return deps.onRefused?.(installed.error);
-    }
-    const plain = { rows: installed.value.rows, provisional: !vouched };
-    const report = held.scope === undefined ? plain : { ...plain, scope: held.scope };
-    onSnapshot?.(report);
-    held.policy.settled?.({ kind: "installed", installed: report, vouched });
+    return engine.installSnapshot(snapshot);
   };
 
   /**
@@ -300,8 +351,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     }
     for (const index of frame.missing) {
       const page = pages[index];
-      if (page !== undefined)
-        send("snap-chunk", snapChunkFrame(frame.id, index, encodeSnapshotRows(page)));
+      if (page !== undefined) send("snap-chunk", snapChunkFrame(frame.id, index, page));
     }
   };
 
@@ -337,7 +387,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
  * manifest's `at` is unsigned, so only the signed coverage can retire history. Without a floor an
  * unvouched install adopts everything the sender claimed when the asker took unvouched state.
  * With a floor, unvouched state adopts per author at most the claimed floor, and a schema with
- * document columns adopts nothing at all.
+ * document columns adopts nothing at all when `docs` says the pages did not carry its documents.
  */
 const adopted = (
   held: Incoming,

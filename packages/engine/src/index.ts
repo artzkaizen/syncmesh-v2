@@ -90,7 +90,7 @@ export type { Narrowed, PurgeScope, Purged } from "./purge.js";
 export type { OwnFloor, OwnPosition } from "./own-position.js";
 export { adoptOwnPosition, createOwnFloor, ownPositionWarning } from "./own-position.js";
 export { openEngine } from "./boot.js";
-export type { DerivedRow, RowWrite, StateStore, WriteKeys } from "./state-store.js";
+export type { DerivedRow, DocColumnBytes, RowWrite, StateStore, WriteKeys } from "./state-store.js";
 export {
   StateCorrupt,
   allRows,
@@ -138,6 +138,7 @@ export type {
 } from "./errors.js";
 export type { Hub, Unsubscribe } from "./listeners.js";
 export type { Reverted, Skipped } from "./undo.js";
+export type { DocCompensation, DocCompensator } from "./revert.js";
 export { createHub } from "./listeners.js";
 export type { Ahead, Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
 export {

@@ -2,12 +2,13 @@ import type { RowWrite, SuiteCase } from "@syncmesh/engine";
 import type { RowRecord } from "@syncmesh/kernel";
 
 import { EMPTY_COVERAGE as NONE, equal } from "@syncmesh/engine";
+import { panic } from "@syncmesh/result";
 
 import type { OpenDriver } from "./index.js";
 
 import { captureChanges, installCapture } from "../capture.js";
 import { openStores } from "../open-stores.js";
-import { ACME, DOC_NOTES, N1, asFold, sqlText, stamp } from "./fixtures.js";
+import { ACME, DOC_NOTES, N1, N2, asFold, sqlText, stamp } from "./fixtures.js";
 
 /*
  * A document column in the app's table (RFC-0023 §6.1): the kernel's cell holds the lineage, the
@@ -46,6 +47,38 @@ export const docColumnCases = (openDriver: OpenDriver): readonly SuiteCase[] => 
       const [title, content] = (await read()) ?? [];
       equal(String(title), "two", "the row's values still land");
       equal(content instanceof Uint8Array ? content : undefined, snapshot, "the snapshot is kept");
+    },
+  },
+  {
+    name: "tables: the state store writes a document column's snapshot past the strict guard, and NULL empties it",
+    run: async () => {
+      const driver = await openDriver("tables-doc-write");
+      const { state } = (await openStores(driver, { tables: [DOC_NOTES] })).unwrap();
+      const { id, content } = DOC_NOTES.columnNames;
+      const record: RowRecord = {
+        cells: new Map([[id, { value: N1, stamp: stamp(1) }]]),
+        writeStamp: stamp(1),
+        partition: ACME,
+      };
+      (await state.commit([{ table: DOC_NOTES.name, key: N1, record }], NONE)).unwrap();
+      const write = state.writeDocColumns ?? panic("a store with tables writes document columns");
+      const snapshot = Uint8Array.of(4, 5, 6);
+      const at = { table: DOC_NOTES.name, column: content };
+      // a row the fold has not written is skipped, not created
+      (
+        await write([
+          { ...at, key: N1, bytes: snapshot },
+          { ...at, key: N2, bytes: snapshot },
+        ])
+      ).unwrap();
+      const read = async () =>
+        (await driver.all(`SELECT id, content FROM doc_notes`)).map(([key, bytes]) => [
+          String(key),
+          bytes instanceof Uint8Array ? bytes.join(",") : null,
+        ]);
+      equal(await read(), [["n1", "4,5,6"]], "written into the row that is there");
+      (await write([{ ...at, key: N1 }])).unwrap();
+      equal(await read(), [["n1", null]], "no bytes is the empty document");
     },
   },
   {

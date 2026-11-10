@@ -9,6 +9,7 @@ import {
   type TableName,
 } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
+import { Result } from "@syncmesh/result";
 import { partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -125,6 +126,22 @@ describe("the document SPI's conformance suite (RFC-0023 §13)", () => {
     const failed = checked.isErr() ? checked.error.failures.map((f) => f.check) : [];
     expect(failed).toContain("total");
     expect(failed).toContain("watchLocal");
+  });
+
+  test("an adapter whose compensation takes nothing back, or cannot be redone, is caught (P6)", () => {
+    const honest = oplog();
+    const idle = checkAdapter({ ...honest, compensate: () => Result.ok(undefined) }, script);
+    expect(idle.isErr() && idle.error.failures.map((f) => f.check)).toContain("compensate");
+    // an undo that hides everything, not just the write's own operations
+    const greedy = checkAdapter(
+      {
+        ...honest,
+        compensate: (doc: OpLog, _updates: readonly Uint8Array[], replica: bigint) =>
+          honest.compensate(doc, [honest.snapshot(doc)], replica),
+      },
+      script,
+    );
+    expect(greedy.isErr() && greedy.error.failures.map((f) => f.check)).toContain("compensate");
   });
 
   test("an adapter that never reports pending operations is caught", () => {

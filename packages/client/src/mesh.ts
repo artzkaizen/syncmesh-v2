@@ -20,7 +20,7 @@ import { openBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
 import { createPolicyQuestions } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
-import { openDocuments } from "./documents.js";
+import { createSnapshotDocs, openDocuments } from "./documents.js";
 import { createDrafts } from "./drafts.js";
 import { createFlush } from "./flush.js";
 import { openGrants, restoreGrants, type MeshGrants } from "./grants.js";
@@ -177,6 +177,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   );
   const blobs = openBlobs(tally, blobStore, () => links.withBlobs());
   const telemetry = followTelemetry(engine);
+  const pageDocs = createSnapshotDocs(schema, options.documents);
   const transportContext = transportContextFor({
     engine,
     identity,
@@ -206,6 +207,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       // the certificate over it is the only thing that can make it more than provisional
       trust: trust?.issuer,
       certificate: options.certificate,
+      snapshotDocs: pageDocs.snapshotDocs,
       // a granted mesh gates reads on every link (D40)
       issuer: trust?.issuer,
     }),
@@ -227,6 +229,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     store: blobStore,
     links,
   });
+  pageDocs.bind(docs?.documents, identity);
 
   const surface: Mesh<D, PC> = {
     engine,
@@ -252,7 +255,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     delivered: createDelivered(engine, identity.peerId),
     received: createReceived(engine),
     synced: createSynced(() => links.list()),
-    revert: (id) => engine.revert(id),
+    revert: (id) => docs?.documents.revert(id) ?? engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
     internal,
     recovery,

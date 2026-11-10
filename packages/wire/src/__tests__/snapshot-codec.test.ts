@@ -11,10 +11,15 @@ import type {
 import { hlcOf, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
-import { encodeCbor } from "../cbor.js";
+import { encodeCbor, type CborValue } from "../cbor.js";
 import { hexToBytes } from "../hex.js";
 import { encodeRecord } from "../record-codec.js";
-import { decodeSnapshotRows, encodeSnapshotRows } from "../snapshot-codec.js";
+import {
+  decodeSnapshotPage,
+  decodeSnapshotRows,
+  encodeSnapshotPage,
+  encodeSnapshotRows,
+} from "../snapshot-codec.js";
 
 const PEER = parsePeerId("a".repeat(64)).unwrap();
 const OTHER = parsePeerId("b".repeat(64)).unwrap();
@@ -102,7 +107,56 @@ describe("the snapshot codec", () => {
   });
 
   test("a snapshot from a build this one does not know is refused, not half-read", () => {
-    const refused = decodeSnapshotRows(encodeCbor([2, [], [], [], []]));
-    expect(refused.isErr() && refused.error.message).toBe("snapshot version 2 is not 1");
+    const refused = decodeSnapshotRows(encodeCbor([3, [], [], [], []]));
+    expect(refused.isErr() && refused.error.message).toBe("snapshot version 3 is not 1 or 2");
+    const short = decodeSnapshotRows(encodeCbor([2, [], [], [], []]));
+    expect(short.isErr() && short.error.message).toBe("snapshot with documents is not a septuple");
+  });
+});
+
+describe("a snapshot page carries the checkpoints of its rows' documents (RFC-0023 §5.5, E30 P5)", () => {
+  const checkpoint = {
+    producer: OTHER,
+    checkpoint: Uint8Array.of(1, 2),
+    snapshot: Uint8Array.of(3),
+  };
+
+  test("a page with documents round-trips, its producer after every peer its rows name", () => {
+    const page = { rows: rows(2), docs: { checkpoints: [checkpoint], complete: true } };
+    const bytes = encodeSnapshotPage(page);
+    const back = decodeSnapshotPage(bytes).unwrap();
+    expect(back).toEqual(page);
+    expect(encodeSnapshotPage(back)).toEqual(bytes);
+    // the rows read the same through the rows-only reader a sender built before P5 still has
+    expect(decodeSnapshotRows(bytes).unwrap()).toEqual(page.rows);
+  });
+
+  test("a page without documents is version 1, byte for byte what it was", () => {
+    const plain = encodeSnapshotPage({ rows: rows(2) });
+    expect(plain).toEqual(encodeSnapshotRows(rows(2)));
+    expect(decodeSnapshotPage(plain).unwrap().docs).toBeUndefined();
+    const none = decodeSnapshotPage(
+      encodeSnapshotPage({ rows: [], docs: { checkpoints: [], complete: false } }),
+    ).unwrap();
+    expect(none.docs).toEqual({ checkpoints: [], complete: false });
+  });
+
+  test("a malformed checkpoint entry is refused, not half-read", () => {
+    const page = (entries: CborValue, complete: CborValue = true) =>
+      decodeSnapshotPage(
+        encodeCbor([2, [hexToBytes(PEER).unwrap()], [], [], [], entries, complete]),
+      );
+    const message = (entries: CborValue, complete?: CborValue) => {
+      const refused = page(entries, complete);
+      return refused.isErr() ? refused.error.message : "read";
+    };
+    expect(message([[0, Uint8Array.of(1), Uint8Array.of(2)]])).toBe("read");
+    expect(message([[1, Uint8Array.of(1), Uint8Array.of(2)]])).toBe(
+      "checkpoint producer index is out of range",
+    );
+    expect(message([[0, "x", Uint8Array.of(2)]])).toBe("checkpoint is not bytes");
+    expect(message([[0, Uint8Array.of(1)]])).toBe("checkpoint is not a triple");
+    expect(message("none")).toBe("checkpoints are not an array");
+    expect(message([], 1)).toBe("completeness is not a boolean");
   });
 });

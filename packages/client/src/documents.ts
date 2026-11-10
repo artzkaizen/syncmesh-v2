@@ -2,12 +2,15 @@ import type { AnyAdapter, BackgroundError, DocBlobs, Documents, Pacing } from "@
 import type { Engine } from "@syncmesh/engine";
 import type { PartitionKey, Procedure } from "@syncmesh/kernel";
 import type { BlobHash, BlobStore } from "@syncmesh/storage";
+import type { SnapshotDocs } from "@syncmesh/transport";
+import type { Identity } from "@syncmesh/wire";
 
 import { BlobUnavailable, createDocuments } from "@syncmesh/docs";
 import { getRecord } from "@syncmesh/kernel";
 import { Result, omitUndefined } from "@syncmesh/result";
 import { createDerivers } from "@syncmesh/schema";
 import { BlobNotFound, isBlobHash } from "@syncmesh/storage";
+import { NO_DOCS } from "@syncmesh/transport";
 
 import type { Blobs } from "./blobs.js";
 import type { BootOptions } from "./boot.js";
@@ -186,6 +189,32 @@ function docBlobs(
       off();
       stopped = true;
       await offering;
+    },
+  };
+}
+
+/**
+ * The documents behind the snapshots a mesh serves and takes (E30 P5): what its links are started
+ * with, before the runtime that answers it exists. `snapshotDocs` is absent when the mesh runs no
+ * document runtime or its schema declares no document column, so its pages carry rows alone. Until
+ * `bind`, a page is served without checkpoints and marked incomplete, and an install holds none,
+ * so nothing is adopted on documents' behalf.
+ */
+export function createSnapshotDocs(
+  schema: BootOptions["schema"],
+  options: MeshDocuments | undefined,
+) {
+  let bound: SnapshotDocs | undefined;
+  const late: SnapshotDocs = {
+    serve: (rows) => bound?.serve(rows) ?? Promise.resolve(NO_DOCS),
+    install: (rows, checkpoints) => bound?.install(rows, checkpoints) ?? Promise.resolve(false),
+  };
+  const runs = options !== undefined && docColumns(schema) !== undefined;
+  return {
+    snapshotDocs: runs ? late : undefined,
+    /** Answers with the runtime's checkpoints, signed as `identity`; nothing without a runtime. */
+    bind: (documents: Documents | undefined, identity: Identity) => {
+      bound = documents?.pages(identity);
     },
   };
 }

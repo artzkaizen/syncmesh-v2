@@ -35,6 +35,7 @@ export type DocsEngine = Pick<
   | "cursors"
   | "mayEditDoc"
   | "writeDerived"
+  | "revert"
 >;
 
 /**

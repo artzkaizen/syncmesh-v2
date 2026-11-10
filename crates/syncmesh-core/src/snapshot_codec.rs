@@ -1,5 +1,8 @@
 //! A page of snapshot rows (`wire/src/snapshot-codec.ts`, RFC-0019): what one `snap-chunk`
-//! carries. `[version, peers, tables, partitions, rows]`, where a row is
+//! carries. `[1, peers, tables, partitions, rows]`, or with the checkpoints of the rows' documents
+//! (RFC-0023 §5.5, E30 P5) `[2, peers, tables, partitions, rows, checkpoints, complete]`, where a
+//! checkpoint is `[producerIndex, envelope, snapshot]` and its producer joins the peers dictionary
+//! after every peer the rows name. A row is
 //! `[tableIndex, key, writeStamp, deleteStamp, partitionIndex, cells]`, a cell is
 //! `[columnIndex, value]` when it sits at the row's write stamp and `[columnIndex, value, stamp]`
 //! when it does not, and a stamp is `[ms, logical, peerIndex]`.
@@ -20,7 +23,34 @@ use crate::row_codec::{cell_from_cbor, cell_to_cbor};
 use crate::signed::{peer_from_bytes, safe_non_negative};
 use crate::stamp::Stamp;
 
-const VERSION: i64 = 1;
+/// A page of rows alone.
+const ROWS_VERSION: i64 = 1;
+/// A page of rows and the checkpoints that stand for their documents.
+const DOCS_VERSION: i64 = 2;
+
+/// A document's checkpoint as a page carries it (RFC-0023 §5.5): the signed `DocCheckpoint`
+/// envelope, whose producer signed it, and the snapshot bytes its key 7 names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageCheckpoint {
+    pub producer: PeerId,
+    pub checkpoint: Vec<u8>,
+    pub snapshot: Vec<u8>,
+}
+
+/// The checkpoints one page carries. `complete` is the sender's word that every document of the
+/// page's rows it holds anything of has one here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageDocs {
+    pub checkpoints: Vec<PageCheckpoint>,
+    pub complete: bool,
+}
+
+/// One page: its rows, and its documents when the sender put them in (version 2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnapshotPage {
+    pub rows: Vec<SnapshotRow>,
+    pub docs: Option<PageDocs>,
+}
 
 /// One addressed row of a snapshot, the kernel's `KeyedRecord`.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +134,11 @@ fn stamp_out(stamp: &Stamp, peers: &mut Dictionary<PeerId>) -> Value {
 
 /// One page of rows, in the order given. Never fails: every row this crate holds encodes.
 pub fn encode_snapshot_rows(rows: &[SnapshotRow]) -> Vec<u8> {
+    encode_snapshot_page(rows, None)
+}
+
+/// [`encode_snapshot_rows`], and with `docs` version 2. Never fails.
+pub fn encode_snapshot_page(rows: &[SnapshotRow], docs: Option<&PageDocs>) -> Vec<u8> {
     let mut peers: Dictionary<PeerId> = Dictionary::new();
     let mut tables: Dictionary<String> = Dictionary::new();
     let mut partitions: Dictionary<String> = Dictionary::new();
@@ -160,8 +195,27 @@ pub fn encode_snapshot_rows(rows: &[SnapshotRow]) -> Vec<u8> {
             Value::Array(vec![Value::Text(table.clone()), Value::Array(names)])
         })
         .collect();
-    encode(&Value::Array(vec![
-        Value::Int(VERSION),
+    // after the rows: a producer joins the peers dictionary behind every peer they name
+    let tail = docs.map(|docs| {
+        let checkpoints = docs
+            .checkpoints
+            .iter()
+            .map(|c| {
+                Value::Array(vec![
+                    index(peers.of(&c.producer)),
+                    Value::Bytes(c.checkpoint.clone()),
+                    Value::Bytes(c.snapshot.clone()),
+                ])
+            })
+            .collect();
+        [Value::Array(checkpoints), Value::Bool(docs.complete)]
+    });
+    let mut page = vec![
+        Value::Int(if docs.is_some() {
+            DOCS_VERSION
+        } else {
+            ROWS_VERSION
+        }),
         Value::Array(
             peers
                 .values
@@ -178,7 +232,11 @@ pub fn encode_snapshot_rows(rows: &[SnapshotRow]) -> Vec<u8> {
                 .collect(),
         ),
         Value::Array(encoded),
-    ]))
+    ];
+    if let Some(tail) = tail {
+        page.extend(tail);
+    }
+    encode(&Value::Array(page))
 }
 
 struct Dictionaries {
@@ -324,20 +382,87 @@ fn read_row(row: &Value, dicts: &Dictionaries) -> Result<SnapshotRow, MalformedS
     Ok(SnapshotRow::new(table.clone(), key, record))
 }
 
-/// Reads one page back. Never panics; every fault is a [`MalformedSnapshot`].
+/// Reads one page's rows back, whichever version carried them. Never panics; every fault is a
+/// [`MalformedSnapshot`].
 pub fn decode_snapshot_rows(bytes: &[u8]) -> Result<Vec<SnapshotRow>, MalformedSnapshot> {
+    decode_snapshot_page(bytes).map(|page| page.rows)
+}
+
+/// Reads one page of either version back: its rows, and on version 2 its documents.
+pub fn decode_snapshot_page(bytes: &[u8]) -> Result<SnapshotPage, MalformedSnapshot> {
     let value = decode(bytes).or_else(|e| malformed(e.message))?;
-    let Some([version, peers, tables, partitions, rows]) = value.as_array() else {
+    let Some(fields) = value.as_array() else {
+        return malformed("snapshot is not an array");
+    };
+    let version = fields.first().and_then(Value::as_int);
+    let (head, tail) = match (version, fields.len()) {
+        (Some(ROWS_VERSION), 5) => fields.split_at(5),
+        (Some(ROWS_VERSION), _) => return malformed("snapshot is not a quintuple"),
+        (Some(DOCS_VERSION), 7) => fields.split_at(5),
+        (Some(DOCS_VERSION), _) => return malformed("snapshot with documents is not a septuple"),
+        _ => {
+            return malformed(format!(
+                "snapshot version is not {ROWS_VERSION} or {DOCS_VERSION}"
+            ));
+        }
+    };
+    let [_, peers, tables, partitions, rows] = head else {
         return malformed("snapshot is not a quintuple");
     };
-    if version.as_int() != Some(VERSION) {
-        return malformed(format!("snapshot version is not {VERSION}"));
-    }
     let dicts = read_dictionaries(peers, tables, partitions)?;
     let Some(rows) = rows.as_array() else {
         return malformed("rows are not an array");
     };
-    rows.iter().map(|row| read_row(row, &dicts)).collect()
+    let rows = rows
+        .iter()
+        .map(|row| read_row(row, &dicts))
+        .collect::<Result<Vec<_>, _>>()?;
+    let docs = match tail {
+        [] => None,
+        [checkpoints, complete] => Some(read_page_docs(checkpoints, complete, &dicts.peers)?),
+        _ => return malformed("snapshot with documents is not a septuple"),
+    };
+    Ok(SnapshotPage { rows, docs })
+}
+
+fn read_page_docs(
+    checkpoints: &Value,
+    complete: &Value,
+    peers: &[PeerId],
+) -> Result<PageDocs, MalformedSnapshot> {
+    let Value::Bool(complete) = complete else {
+        return malformed("completeness is not a boolean");
+    };
+    let Some(entries) = checkpoints.as_array() else {
+        return malformed("checkpoints are not an array");
+    };
+    let checkpoints = entries
+        .iter()
+        .map(|entry| {
+            let Some([producer, checkpoint, snapshot]) = entry.as_array() else {
+                return malformed("checkpoint is not a triple");
+            };
+            if safe_non_negative(Some(producer)).is_none() {
+                return malformed("checkpoint producer is not an index");
+            }
+            let producer = at(peers, producer, "checkpoint producer")?.clone();
+            let Some(checkpoint) = checkpoint.as_bytes() else {
+                return malformed("checkpoint is not bytes");
+            };
+            let Some(snapshot) = snapshot.as_bytes() else {
+                return malformed("checkpoint snapshot is not bytes");
+            };
+            Ok(PageCheckpoint {
+                producer,
+                checkpoint: checkpoint.to_vec(),
+                snapshot: snapshot.to_vec(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PageDocs {
+        checkpoints,
+        complete: *complete,
+    })
 }
 
 #[cfg(test)]
@@ -389,6 +514,94 @@ mod tests {
         assert_eq!(back[0].record, rows[0].record);
         assert_eq!(back[1].record, rows[1].record);
         assert_eq!(encode_snapshot_rows(&back), bytes);
+    }
+
+    #[test]
+    fn a_page_with_documents_round_trips_and_its_rows_read_alone() {
+        let record = RowRecord {
+            write_stamp: Some(stamp(10, 1)),
+            ..RowRecord::default()
+        };
+        let rows = vec![SnapshotRow::new("notes", "n1", record)];
+        let docs = PageDocs {
+            checkpoints: vec![PageCheckpoint {
+                producer: peer(9),
+                checkpoint: vec![1, 2],
+                snapshot: vec![3],
+            }],
+            complete: true,
+        };
+        let bytes = encode_snapshot_page(&rows, Some(&docs));
+        let back = decode_snapshot_page(&bytes).unwrap();
+        assert_eq!(back.docs.as_ref(), Some(&docs));
+        assert_eq!(encode_snapshot_page(&back.rows, back.docs.as_ref()), bytes);
+        assert_eq!(decode_snapshot_rows(&bytes).unwrap(), rows);
+        // a page without documents is version 1, byte for byte
+        assert_eq!(
+            encode_snapshot_page(&rows, None),
+            encode_snapshot_rows(&rows)
+        );
+        assert_eq!(
+            decode_snapshot_page(&encode_snapshot_rows(&rows))
+                .unwrap()
+                .docs,
+            None
+        );
+    }
+
+    #[test]
+    fn a_malformed_checkpoint_entry_is_a_value() {
+        let page = |entries: Value, complete: Value| {
+            encode(&Value::Array(vec![
+                Value::Int(2),
+                Value::Array(vec![Value::Bytes(vec![7; 32])]),
+                Value::Array(vec![]),
+                Value::Array(vec![]),
+                Value::Array(vec![]),
+                entries,
+                complete,
+            ]))
+        };
+        let message = |entries: Value, complete: Value| match decode_snapshot_page(&page(
+            entries, complete,
+        )) {
+            Ok(_) => "read".to_owned(),
+            Err(e) => e.message,
+        };
+        let entry = |i: i64| {
+            Value::Array(vec![
+                Value::Int(i),
+                Value::Bytes(vec![1]),
+                Value::Bytes(vec![2]),
+            ])
+        };
+        assert_eq!(
+            message(Value::Array(vec![entry(0)]), Value::Bool(true)),
+            "read"
+        );
+        assert_eq!(
+            message(Value::Array(vec![entry(1)]), Value::Bool(true)),
+            "checkpoint producer index is out of range"
+        );
+        assert_eq!(
+            message(Value::text("x"), Value::Bool(true)),
+            "checkpoints are not an array"
+        );
+        assert_eq!(
+            message(Value::Array(vec![]), Value::Int(1)),
+            "completeness is not a boolean"
+        );
+        let short = encode(&Value::Array(vec![
+            Value::Int(2),
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+        ]));
+        assert_eq!(
+            decode_snapshot_page(&short).unwrap_err().message,
+            "snapshot with documents is not a septuple"
+        );
     }
 
     #[test]

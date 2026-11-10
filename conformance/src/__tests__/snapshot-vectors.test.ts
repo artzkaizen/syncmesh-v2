@@ -1,5 +1,10 @@
 import { decodeFrame } from "@syncmesh/transport";
-import { decodeSnapshotRows, encodeSnapshotRows, hexToBytes } from "@syncmesh/wire";
+import {
+  decodeCheckpoint,
+  decodeSnapshotPage,
+  encodeSnapshotPage,
+  hexToBytes,
+} from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import raw from "../../snapshot-vectors.json" with { type: "json" };
@@ -16,7 +21,7 @@ describe("join exchange vectors — frozen (RFC-0019, D46, U31)", () => {
       const frame = decodeFrame(hexToBytes(hex).unwrap()).unwrap();
       if (frame.kind !== "snap-chunk") return [];
       return [
-        { sent: frame.bytes, again: encodeSnapshotRows(decodeSnapshotRows(frame.bytes).unwrap()) },
+        { sent: frame.bytes, again: encodeSnapshotPage(decodeSnapshotPage(frame.bytes).unwrap()) },
       ];
     });
 
@@ -35,6 +40,32 @@ describe("join exchange vectors — frozen (RFC-0019, D46, U31)", () => {
 
   test("a holder leaves its local table out: it serves the frames of one that never wrote it (U36)", () => {
     expect(raw.served.local).toEqual(raw.served.everything);
+  });
+
+  test("a holder with documents serves version 2 pages: each row's checkpoint, signed, and whether the page is complete (E30 P5)", () => {
+    const pages = raw.served.documented.frames.flatMap((hex) => {
+      const frame = decodeFrame(hexToBytes(hex).unwrap()).unwrap();
+      return frame.kind === "snap-chunk" ? [decodeSnapshotPage(frame.bytes).unwrap()] : [];
+    });
+    const plain = raw.served.everything.frames.flatMap((hex) => {
+      const frame = decodeFrame(hexToBytes(hex).unwrap()).unwrap();
+      return frame.kind === "snap-chunk" ? [decodeSnapshotPage(frame.bytes).unwrap()] : [];
+    });
+    // the same rows as the holder without documents serves, and a checkpoint for each
+    expect(pages.map((page) => page.rows)).toEqual(plain.map((page) => page.rows));
+    expect(plain.every((page) => page.docs === undefined)).toBe(true);
+    for (const page of pages) {
+      const docs = page.docs;
+      expect(docs?.complete).toBe(page.rows.every((row) => row.record.deleteStamp === undefined));
+      expect(docs?.checkpoints).toHaveLength(page.rows.length);
+      expect(docs?.checkpoints.every((c) => c.producer === raw.issuer)).toBe(true);
+      for (const [i, entry] of (docs?.checkpoints ?? []).entries()) {
+        const signed = decodeCheckpoint(entry.checkpoint, entry.producer).unwrap();
+        expect(signed.checkpoint.key === page.rows[i]?.key).toBe(true);
+        expect(new TextDecoder().decode(entry.snapshot)).toBe(page.rows[i]?.key ?? "");
+      }
+    }
+    expect(pages.map((page) => page.docs?.complete)).toContain(false);
   });
 
   test("an install's floor is what the log keeps for a rebuild to refuse on (U37)", () => {
