@@ -1,6 +1,7 @@
 import type { SqlValue, SqliteDriver } from "@syncmesh/storage";
 import type { CrashHarness, CrashMode, TornHarness } from "@syncmesh/storage/driver-tests";
 
+import { Temporal } from "@syncmesh/temporal";
 import { Database } from "bun:sqlite";
 import { Miniflare } from "miniflare";
 import { spawnSync } from "node:child_process";
@@ -43,7 +44,10 @@ export interface Runtime {
   readonly room: (name: string) => RoomStub;
   /** The object's id as the persist directory names its file. */
   readonly id: (name: string) => string;
-  /** SIGKILL to workerd itself, then waits for it to be gone: the runtime dies mid-turn. */
+  /**
+   * SIGKILL to workerd itself, then waits for it to be gone and for Miniflare to let it go: the
+   * runtime dies mid-turn, and no other one is started in its place.
+   */
   readonly kill: () => Promise<void>;
   readonly dispose: () => Promise<void>;
 }
@@ -67,13 +71,16 @@ export async function bundleRoom(dir: string): Promise<string> {
 }
 
 /** The pids of this process's children named workerd. */
-const workerds = () =>
+export const workerds = () =>
   new Set(
     spawnSync("pgrep", ["-P", `${process.pid}`, "workerd"], { encoding: "utf8" })
       .stdout.split("\n")
       .filter((line) => line !== "")
       .map(Number),
   );
+
+/** How often `kill` looks for the killed workerd to be gone. */
+const POLL = Temporal.Duration.from({ milliseconds: 10 });
 
 const gone = (pid: number) => {
   const probe = spawnSync("kill", ["-0", `${pid}`]);
@@ -104,8 +111,10 @@ export async function startRuntime(script: string, persist: string): Promise<Run
   });
   running.add(mf);
   await mf.ready;
-  const [pid] = [...workerds()].filter((candidate) => !before.has(candidate));
-  if (pid === undefined) throw new Error("no workerd process appeared for this Miniflare");
+  const fresh = [...workerds()].filter((candidate) => !before.has(candidate));
+  const [pid] = fresh;
+  if (pid === undefined || fresh.length > 1)
+    throw new Error(`expected one new workerd process for this Miniflare, found ${fresh.length}`);
   // SAFETY: Miniflare's proxy onto the `ROOM` binding, a `DurableObjectNamespace`; its published
   // type names the workers-types one this package does not load, so it is read as the two calls made
   /* oxlint-disable-next-line anti-slop/no-chained-type-assertions -- there is no type to keep: the
@@ -113,19 +122,26 @@ export async function startRuntime(script: string, persist: string): Promise<Run
      not load, and the two calls below are the whole of what is claimed */
   const namespace = (await mf.getDurableObjectNamespace("ROOM")) as unknown as RoomNamespace;
   let killed = false;
+  let disposed: Promise<void> | undefined;
+  // a killed runtime has nothing left for `dispose` to stop, and it answers so with a throw
+  const dispose = () => {
+    running.delete(mf);
+    disposed ??= mf.dispose();
+    return disposed.catch((cause: unknown) => (killed ? undefined : Promise.reject(cause)));
+  };
   return {
     room: (name) => namespace.get(namespace.idFromName(name)),
     id: (name) => namespace.idFromName(name).toString(),
     kill: async () => {
       killed = true;
+      // Miniflare starts a new workerd over the same store when one dies under it, unless it is
+      // disposing: `dispose` marks that before its first await, and kills workerd only later
+      const released = dispose();
       process.kill(pid, "SIGKILL");
-      while (!gone(pid)) await Bun.sleep(10);
+      while (!gone(pid)) await Bun.sleep(POLL.total("milliseconds"));
+      await released;
     },
-    // a killed runtime has nothing left for `dispose` to stop, and it answers so with a throw
-    dispose: () => {
-      running.delete(mf);
-      return mf.dispose().catch((cause: unknown) => (killed ? undefined : Promise.reject(cause)));
-    },
+    dispose,
   };
 }
 

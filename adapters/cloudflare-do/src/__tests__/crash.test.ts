@@ -1,10 +1,18 @@
 import { crashTests, tornTests } from "@syncmesh/storage/driver-tests";
-import { afterAll, beforeAll, describe, test } from "bun:test";
+import { Temporal } from "@syncmesh/temporal";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { bundleRoom, stopRuntimes, workerdHarness, workerdTornHarness } from "./workerd/harness.js";
+import {
+  bundleRoom,
+  startRuntime,
+  stopRuntimes,
+  workerdHarness,
+  workerdTornHarness,
+  workerds,
+} from "./workerd/harness.js";
 
 /**
  * O16 on a real workerd: the crash suite every device driver passes, run against
@@ -24,6 +32,18 @@ beforeAll(async () => void (script = await bundleRoom(dir)), 120_000);
 afterAll(async () => {
   await stopRuntimes();
   rmSync(dir, { recursive: true, force: true });
+}, 60_000);
+
+/** How long a killed runtime is watched for a successor Miniflare would start in its place. */
+const AFTERLIFE = Temporal.Duration.from({ milliseconds: 500 });
+
+test("a killed workerd stays dead: Miniflare starts no other over its store", async () => {
+  const before = workerds();
+  const runtime = await startRuntime(script, join(dir, "afterlife"));
+  await runtime.kill();
+  await Bun.sleep(AFTERLIFE.total("milliseconds"));
+  expect([...workerds()].filter((pid) => !before.has(pid))).toEqual([]);
+  await runtime.dispose();
 }, 60_000);
 
 for (const death of ["sigkill", "reset"] as const)
