@@ -14,7 +14,7 @@ import { openDatabaseSync } from "expo-sqlite";
 
 import type { ExpoDatabase } from "./driver.js";
 
-import { expoSqliteDriverOver } from "./driver.js";
+import { durableDriverOver } from "./driver.js";
 
 export type { ExpoDatabase, SqlTrace } from "./driver.js";
 export { expoSqliteDriverOver, traceStatements } from "./driver.js";
@@ -36,9 +36,7 @@ export { expoSqliteDriverOver, traceStatements } from "./driver.js";
  */
 export function expoSqliteDriver(name: string): SqliteDriver {
   const db: ExpoDatabase = openDatabaseSync(name);
-  db.execSync("PRAGMA journal_mode = WAL");
-  db.execSync("PRAGMA synchronous = NORMAL");
-  return expoSqliteDriverOver(db);
+  return durableDriverOver(db);
 }
 
 export interface DefaultStoreOptions extends OpenStoresOptions {

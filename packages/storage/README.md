@@ -139,9 +139,11 @@ than read around:
   makes them, and read fine. A read that finds a hole looks again with the entries and the gaps
   from one snapshot before it refuses, so an append landing mid-read does not make a sound log
   look torn.
-- `verifyLog(driver)` checks the log's pages: `PRAGMA quick_check` on a device's SQLite, `amcheck`
-  on Postgres where the extension is installed and the role may execute the overloads it calls, `NoIntegrityCheck`
-  where there is no check to run. `mesh.inspect.verify()` is the same call from a mesh.
+- `verifyLog(driver)` checks the log's pages: `PRAGMA quick_check` on a device's SQLite and on
+  each log table of an inline log (a Durable Object, whose workerd allows that one `PRAGMA`),
+  `amcheck` on Postgres where the extension is installed and the role may execute the overloads it
+  calls, `NoIntegrityCheck` where there is no check to run (a runtime that refuses it).
+  `mesh.inspect.verify()` is the same call from a mesh.
 - `openStores` runs that check once when the last session over the log did not end in
   `Stores.close()` or `Stores.markClean()`. Call `markClean()` when you keep the connection open
   past the stores, or every launch after looks like one after a crash. `Stores.markOpen()` marks

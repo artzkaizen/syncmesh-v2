@@ -1,4 +1,4 @@
-import { CRASH_SCHEMA, linesOf, tornTests } from "@syncmesh/storage/driver-tests";
+import { CRASH_SCHEMA, streamLines, tornTests } from "@syncmesh/storage/driver-tests";
 import { afterAll, describe, test } from "bun:test";
 import {
   closeSync,
@@ -28,7 +28,7 @@ describe("@syncmesh/sqlite-node, under Node, refuses a torn log rather than read
         stderr: "inherit",
       });
       return {
-        lines: linesOf(child.stdout),
+        lines: streamLines(child.stdout),
         kill: async () => {
           child.kill("SIGKILL");
           await child.exited;

@@ -32,7 +32,9 @@
     "@syncmesh/transport": "workspace:*",
     "@types/bun": "catalog:",
     "drizzle-orm": "catalog:",
+    "miniflare": "^4.20260730.0",
     "typescript": "catalog:",
+    "vite": "catalog:",
     "vite-plus": "catalog:"
   }
 }

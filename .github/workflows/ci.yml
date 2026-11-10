@@ -51,8 +51,8 @@ jobs:
           node-version: 24
       - run: bun install --frozen-lockfile
       # Chromium for @syncmesh/browser's two-tab test (U11, U32) — OPFS, Web Locks and a
-      # SharedWorker in a real browser — and for rounds-web's ward test (U6), at the revision the
-      # installed playwright drives
+      # SharedWorker in a real browser — for rounds-web's ward test (U6) and for sqlite-wasm's OPFS
+      # crash suite (D39), at the revision the installed playwright drives
       - name: Install Chromium for the browser tests
         working-directory: adapters/browser
         run: bun x playwright install --with-deps chromium-headless-shell

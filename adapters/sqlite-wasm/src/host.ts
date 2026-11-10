@@ -6,7 +6,7 @@ import { Result, omitUndefined, serializeTagged } from "@syncmesh/result";
 import type { Answer, OpenCall, Reply, Request, StatementCall, WirePort } from "./protocol.js";
 import type { WasmStorage } from "./vfs.js";
 
-import { bindingFor } from "./binding.js";
+import { databaseBinding } from "./binding.js";
 import { loadSqlite } from "./module.js";
 import { NoSuchDatabase, SqliteStatementFailed } from "./protocol.js";
 import { openDatabase } from "./vfs.js";
@@ -63,7 +63,7 @@ const opening = (held: Map<number, Held>, handle: () => number, call: OpenCall) 
       ),
     );
     const db = handle();
-    held.set(db, { binding: bindingFor(opened), storage: opened.storage });
+    held.set(db, { binding: databaseBinding(opened), storage: opened.storage });
     return Result.ok({ db, storage: opened.storage });
   });
 
@@ -116,8 +116,15 @@ export function serveSqlite(port: WirePort): void {
     // SAFETY: the only sender is `connectSqlite`, whose every post is a `Request`; a message from
     // anywhere else would be a page shouting into a worker it does not own
     const request = event.data as Request;
-    void answer(held, handle, request).then((result) =>
-      port.postMessage(replyTo(request.id, result)),
+    // an answer that throws instead of returning is still answered: a request left without a
+    // reply is a page awaiting it forever
+    void Result.tryPromise(() => answer(held, handle, request)).then((settled) =>
+      port.postMessage(
+        replyTo(
+          request.id,
+          settled.andThen((result) => result),
+        ),
+      ),
     );
   };
 }

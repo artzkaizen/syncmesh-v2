@@ -48,9 +48,9 @@ export interface CrashHarness {
  * Each line of a child's output, as it arrives: what a harness builds {@link CrashChild.lines} from.
  *
  * @example
- * lines: linesOf(Bun.spawn(command, { stdout: "pipe" }).stdout)
+ * lines: streamLines(Bun.spawn(command, { stdout: "pipe" }).stdout)
  */
-export async function* linesOf(stream: AsyncIterable<Uint8Array>): AsyncIterable<string> {
+export async function* streamLines(stream: AsyncIterable<Uint8Array>): AsyncIterable<string> {
   const decoder = new TextDecoder();
   let pending = "";
   for await (const chunk of stream) {
@@ -124,6 +124,39 @@ const engineOver = async (driver: SqlDriver, withState: boolean) => {
 };
 
 /**
+ * One writer over `driver`, carrying on from whatever an earlier, killed one left: each call
+ * writes the next batch in `mode` and answers the highest sequence it committed. What a child
+ * that cannot loop forever steps through, one batch per call — a Durable Object, whose turn is
+ * its transaction.
+ *
+ * @example
+ * const step = await crashWriter(driver, "fold");
+ * const committed = await step(); // 20, then 40, …
+ */
+export async function crashWriter(
+  driver: SqlDriver,
+  mode: CrashMode,
+): Promise<() => Promise<number>> {
+  let next: number;
+  let write: (batch: readonly StoredEvent[]) => Promise<void>;
+  if (mode === "append") {
+    const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
+    next = Number((await stores.events.lastSeq(CRASH_AUTHOR, "synced")).unwrap() ?? 0) + 1;
+    write = async (batch) => (await stores.events.appendBatch(batch)).unwrap();
+  } else {
+    const { engine } = await engineOver(driver, true);
+    next = Number((await engine.cursors()).unwrap().get(CRASH_AUTHOR) ?? 0) + 1;
+    write = async (batch) => void (await engine.receiveBatch(batch)).unwrap();
+  }
+  return async () => {
+    const first = next;
+    await write(batchFrom(first));
+    next = first + CRASH_BATCH;
+    return next - 1;
+  };
+}
+
+/**
  * The child's whole life: write batch after batch until killed, calling `committed` with the
  * highest sequence each time a batch's transaction has returned. Never resolves.
  */
@@ -132,21 +165,9 @@ export async function crashChild(
   mode: CrashMode,
   committed: (seq: number) => void,
 ): Promise<never> {
-  if (mode === "append") {
-    const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
-    // a child started over a killed one's store carries on from what that one left
-    const resume = Number((await stores.events.lastSeq(CRASH_AUTHOR, "synced")).unwrap() ?? 0);
-    for (let first = resume + 1; ; first += CRASH_BATCH) {
-      (await stores.events.appendBatch(batchFrom(first))).unwrap();
-      committed(first + CRASH_BATCH - 1);
-    }
-  }
-  const { engine } = await engineOver(driver, true);
-  const resume = Number((await engine.cursors()).unwrap().get(CRASH_AUTHOR) ?? 0);
-  for (let first = resume + 1; ; first += CRASH_BATCH) {
-    (await engine.receiveBatch(batchFrom(first))).unwrap();
-    committed(first + CRASH_BATCH - 1);
-  }
+  // a child started over a killed one's store carries on from what that one left
+  const step = await crashWriter(driver, mode);
+  for (;;) committed(await step());
 }
 
 /** Kills per case: the later rounds start over a store the earlier ones left mid-write. */

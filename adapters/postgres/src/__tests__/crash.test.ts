@@ -1,5 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
-import { crashTests, linesOf } from "@syncmesh/storage/driver-tests";
+import { crashTests, streamLines } from "@syncmesh/storage/driver-tests";
 import { afterAll, describe, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +26,7 @@ describe("@syncmesh/postgres over on-disk PGlite survives kill -9", () => {
         stderr: "inherit",
       });
       return {
-        lines: linesOf(child.stdout),
+        lines: streamLines(child.stdout),
         kill: async () => {
           child.kill("SIGKILL");
           await child.exited;

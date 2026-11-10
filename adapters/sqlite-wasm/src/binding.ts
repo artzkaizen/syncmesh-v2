@@ -11,7 +11,7 @@ import type { OpenedDatabase } from "./vfs.js";
  * the other end of a `MessagePort` for a database in a worker. A statement that behaves one way in
  * a test runner and another in a browser would be the whole bug.
  */
-export const bindingFor = ({ db, release }: OpenedDatabase): SqliteBinding => ({
+export const databaseBinding = ({ db, release }: OpenedDatabase): SqliteBinding => ({
   exec: (sql) => void db.exec(sql),
   run: (sql, params) => void db.exec({ sql, bind: [...params] }),
   all: (sql, params) =>

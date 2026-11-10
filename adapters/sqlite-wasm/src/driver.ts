@@ -7,7 +7,7 @@ import type { SqliteWasmUnavailable } from "./module.js";
 import type { WirePort } from "./protocol.js";
 import type { PoolFailure, VfsOptions, WasmStorage, WhenPoolHeld } from "./vfs.js";
 
-import { bindingFor } from "./binding.js";
+import { databaseBinding } from "./binding.js";
 import { loadSqlite } from "./module.js";
 import { connectSqlite } from "./remote.js";
 import { openDatabase, originHasOpfs, threadHasSyncAccessHandles } from "./vfs.js";
@@ -76,6 +76,10 @@ export interface WasmSqliteOptions {
    * {@link WhenPoolHeld}. Default `"refuse"`, which is the right answer for a tab asking whether
    * it may be durable — and the wrong one for a worker that has already won an election and is
    * entitled to the pool the moment the browser finishes reaping the context that had it.
+   *
+   * `close` resolves before the pool is given back when another open of the same directory is
+   * under way on that thread: the pool goes back once that open is done. A context that opens
+   * the directory right after such a close, under `"refuse"`, can be told `OpfsPoolHeld`.
    */
   readonly whenHeld?: WhenPoolHeld;
 }
@@ -123,7 +127,7 @@ const inThread = (storage: WasmStorage | "auto", where: VfsOptions) =>
   Result.gen(async function* () {
     const sqlite3 = yield* Result.await(loadSqlite());
     const opened = yield* Result.await(openDatabase(sqlite3, storage, where));
-    return Result.ok({ ...sqliteDriver(bindingFor(opened)), storage: opened.storage });
+    return Result.ok({ ...sqliteDriver(databaseBinding(opened)), storage: opened.storage });
   });
 
 const inWorker = (
