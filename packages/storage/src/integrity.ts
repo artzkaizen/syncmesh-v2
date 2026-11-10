@@ -62,35 +62,47 @@ const inlineQuickCheck = (
   Result.gen(async function* () {
     const names = LOG_TABLES.map((name) => logTable(name, "inline"));
     const present = yield* Result.await(
-      attempt("the log failed its integrity check", () =>
-        driver.all(
-          `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => "?").join(", ")})`,
-          names,
+      Result.tryPromise({
+        try: () =>
+          driver.all(
+            `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => "?").join(", ")})`,
+            names,
+          ),
+        catch: refusedOr(
+          "this runtime refuses reading sqlite_master",
+          "the log failed its integrity check",
         ),
-      ),
+      }),
     );
     const held = new Set(present.map(([name]) => name));
     for (const table of names.filter((name) => held.has(name))) {
       const rows = yield* Result.await(
         Result.tryPromise({
           try: () => driver.all(`PRAGMA quick_check(${table})`),
-          catch: (cause) =>
-            cause instanceof Error && REFUSED.test(cause.message)
-              ? new NoIntegrityCheck({
-                  message:
-                    "this runtime refuses PRAGMA quick_check, so the log's pages cannot be checked from here",
-                  cause,
-                })
-              : new StoreFailure({
-                  message: `the log failed its integrity check on ${table}`,
-                  cause,
-                }),
+          catch: refusedOr(
+            "this runtime refuses PRAGMA quick_check",
+            `the log failed its integrity check on ${table}`,
+          ),
         }),
       );
       yield* verdict(rows);
     }
     return Result.ok(undefined);
   });
+
+/**
+ * A failed statement of the inline check: {@link NoIntegrityCheck} when the runtime refused it
+ * ({@link REFUSED}), saying `refusal`; otherwise the database failing the check, saying `damage`.
+ */
+const refusedOr =
+  (refusal: string, damage: string) =>
+  (cause: unknown): StoreFailure | NoIntegrityCheck =>
+    cause instanceof Error && REFUSED.test(cause.message)
+      ? new NoIntegrityCheck({
+          message: `${refusal}, so the log's pages cannot be checked from here`,
+          cause,
+        })
+      : new StoreFailure({ message: damage, cause });
 
 /** The `verify_heapam` overload `verify_heapam($1::regclass)` resolves to, its defaults filled. */
 const VERIFY_HEAPAM = "verify_heapam(regclass,boolean,boolean,text,bigint,bigint)";

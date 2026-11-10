@@ -56,6 +56,13 @@ describe("verifyLog on an inline log (D39)", () => {
     expect(verified.isErr() && verified.error._tag).toBe("NoIntegrityCheck");
   });
 
+  test("a runtime that refuses the lookup of the log's tables answers NoIntegrityCheck too", async () => {
+    const driver = inline(/FROM sqlite_master WHERE type = 'table' AND name IN/);
+    (await sqliteEventStore(driver)).unwrap();
+    const verified = await verifyLog(driver);
+    expect(verified.isErr() && verified.error._tag).toBe("NoIntegrityCheck");
+  });
+
   test("a check that fails in any other words is damage, as workerd reports a torn page", async () => {
     const driver = inline(/^PRAGMA/, "false == true");
     (await sqliteEventStore(driver)).unwrap();
