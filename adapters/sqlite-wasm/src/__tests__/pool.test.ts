@@ -11,12 +11,13 @@ import { holdPool, releaseWhenIdle } from "../pool.js";
  * and no `navigator.storage`, so the lease is a no-op and no slot reads as held, and what is left
  * is this module's own bookkeeping around the calls.
  */
-const fakePool = (reserve: () => Promise<void>) => {
+const fakePool = (reserve: () => Promise<void>, wake: () => Promise<void> = async () => {}) => {
   const calls = { pause: 0 };
   let paused = false;
   const util = {
     isPaused: () => paused,
     unpauseVfs: async () => {
+      await wake();
       paused = false;
     },
     pauseVfs: () => {
@@ -47,6 +48,30 @@ describe("holdPool", () => {
     const held = await holdPool(install, directory, { ...options, directory });
     expect(held.isErr()).toBe(true);
     // the install took every slot's handle; left awake, another context finds them all held
+    expect(calls.pause).toBe(1);
+  });
+
+  test("an open whose pool will not wake gives back the handles the wake kept", async () => {
+    let refuse = false;
+    const held = Object.assign(new Error("a slot is held by another context"), {
+      name: "NoModificationAllowedError",
+    });
+    const { calls, install } = fakePool(
+      async () => {},
+      async () => {
+        if (refuse) throw held;
+      },
+    );
+    const directory = fresh();
+    const first = (await holdPool(install, directory, { ...options, directory })).unwrap();
+    // the store closes as `databases.ts` closes one: its reference goes, and the pool is paused
+    first.open -= 1;
+    first.util.pauseVfs();
+    calls.pause = 0;
+    refuse = true;
+    const woken = await holdPool(install, directory, { ...options, directory });
+    expect(woken.isErr()).toBe(true);
+    // the wake failed part-way; left as it is, the late handles stay held by this thread
     expect(calls.pause).toBe(1);
   });
 

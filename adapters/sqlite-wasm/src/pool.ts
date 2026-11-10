@@ -1,6 +1,7 @@
 import type { SAHPoolUtil } from "@sqlite.org/sqlite-wasm";
 
 import { Result, TaggedError } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 
 import type { OptionalVfs, VfsOptions, WasmStorage } from "./vfs.js";
 
@@ -294,7 +295,7 @@ function poolIn(
 }
 
 /** Long enough to be past a reap, short enough that nobody watches a spinner for it. */
-const REAP_PAUSE = 100;
+const REAP_PAUSE = Temporal.Duration.from({ milliseconds: 100 });
 
 /** sqlite-wasm's own child of a pool's directory, holding one file per slot (its `OPAQUE_DIR_NAME`). */
 const SLOTS = ".opaque";
@@ -346,17 +347,22 @@ const slotsHeld = async (directory: string): Promise<boolean> => {
     if (next.isErr()) return false;
     at = next.value;
   }
-  for await (const slot of at.values()) {
-    const take = slot.createSyncAccessHandle;
-    if (slot.kind !== "file" || take === undefined) continue;
-    const handle = await Result.tryPromise({
-      try: () => take.call(slot),
-      catch: (cause) => cause,
-    });
-    if (handle.isOk()) handle.value.close();
-    else if (handle.error instanceof Error && CONTENDED.has(handle.error.name)) return true;
-  }
-  return false;
+  const probed = await Result.tryPromise(async () => {
+    for await (const slot of at.values()) {
+      const take = slot.createSyncAccessHandle;
+      if (slot.kind !== "file" || take === undefined) continue;
+      const handle = await Result.tryPromise({
+        try: () => take.call(slot),
+        catch: (cause) => cause,
+      });
+      if (handle.isOk()) handle.value.close();
+      else if (handle.error instanceof Error && CONTENDED.has(handle.error.name)) return true;
+    }
+    return false;
+  });
+  // a directory that goes as it is read, or a handle that will not close, is not contention: the
+  // install reports what it finds, and the open still answers as a value with its lease given back
+  return probed.unwrapOr(false);
 };
 
 /**
@@ -370,7 +376,7 @@ export const reaped = async (
   if (!(await slotsHeld(directory))) return Result.ok(undefined);
   if (when === "refuse")
     return Result.err(new OpfsPoolHeld({ directory, message: HELD_ELSEWHERE }));
-  await new Promise((wake) => setTimeout(wake, REAP_PAUSE));
+  await new Promise((wake) => setTimeout(wake, REAP_PAUSE.total("milliseconds")));
   return reaped(directory, when);
 };
 
@@ -459,8 +465,11 @@ async function takePool(
   const when = options.whenHeld ?? "refuse";
   const leased = await takeLease(directory, when);
   if (leased.isErr()) return leased;
-  // a lease this call did not take is another open's, which is still using it
-  const refused = <R>(failure: R) => {
+  // a lease this call did not take is another open's, which is still using it. A failed wake or
+  // reserve can leave this thread holding slots' handles: with no store of it on `pool`, they go
+  // back with the lease, or the next context to take it finds them held by this one
+  const refused = <R>(failure: R, pool?: HeldPool) => {
+    if (pool?.open === 0) said(directory, "kept its handles", () => pool.util.pauseVfs());
     if (leased.value) dropLease(directory);
     return failure;
   };
@@ -478,18 +487,15 @@ async function takePool(
       try: () => pool.util.unpauseVfs(),
       catch: poolFailure(directory),
     });
-    if (woken.isErr()) return refused(woken);
+    // sqlite-wasm takes the handles all at once and keeps the late ones when one is refused
+    if (woken.isErr()) return refused(woken, pool);
   }
   const reserved = await Result.tryPromise({
     try: () => pool.util.reserveMinimumCapacity(options.capacity),
     catch: poolFailure(directory),
   });
-  if (reserved.isErr()) {
-    // the install or the wake took every slot's handle; with no store of this thread on the pool,
-    // they go back with the lease, or the next context to take it finds its slots held by this one
-    if (pool.open === 0) said(directory, "kept its handles", () => pool.util.pauseVfs());
-    return refused(reserved);
-  }
+  // the install or the wake took every slot's handle
+  if (reserved.isErr()) return refused(reserved, pool);
   pool.open += 1;
   return held;
 }

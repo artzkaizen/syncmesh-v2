@@ -10,6 +10,7 @@
 import type { CrashHarness, CrashMode, TornHarness } from "@syncmesh/storage/driver-tests";
 
 import { CRASH_SCHEMA, crashTests, tornTests } from "@syncmesh/storage/driver-tests";
+import { Temporal } from "@syncmesh/temporal";
 
 import type { ChildOrder, FileAnswer, FileOrder } from "./messages.js";
 
@@ -224,7 +225,7 @@ const openCases = (death: Death) => {
         // the second asks for more slots than the pool has, so its open is still adding them
         // when the last store before it closes
         const growing = openIn(directory, "grown");
-        await new Promise((wake) => setTimeout(wake, GROWING));
+        await new Promise((wake) => setTimeout(wake, GROWING.total("milliseconds")));
         await first.close?.();
         const grown = await growing;
         if (grown.isErr()) throw new Error(`refused beside a close: ${told(grown.error)}`);
@@ -250,7 +251,7 @@ const openCases = (death: Death) => {
 };
 
 /** Long enough for an open to be past the lease and into adding slots, short of finishing them. */
-const GROWING = 20;
+const GROWING = Temporal.Duration.from({ milliseconds: 20 });
 
 /** A store of its own under `directory`, refused at once if another context holds the pool. */
 const openIn = (directory: string, name: string, capacity = SLOTS) =>

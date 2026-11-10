@@ -18,7 +18,8 @@
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
     "@syncmesh/result": "workspace:*",
-    "@syncmesh/storage": "workspace:*"
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/temporal": "workspace:*"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
